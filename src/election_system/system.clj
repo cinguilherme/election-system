@@ -220,7 +220,7 @@
                                    :options {:partition idx
                                              :partitions worker-count
                                              :poll-ms 10
-                                             :watchdog-interval-ms 60000}})]
+                                             :watchdog-interval-ms (min 500 (long (or tick-interval-ms 2000)))}})]
                           {:partition idx
                            :transport t
                            :runtime rt}))

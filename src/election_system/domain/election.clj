@@ -57,3 +57,26 @@
                (+ sum (long v)))
              0
              (or tallies {})))
+
+(defn precinct-actor-id
+  "Constructs the actor entity-id for a `(election-id, precinct-id)` pair.
+   For `\"national-2026\"` (or when `precinct-id` is already composite), preserves
+   `precinct-id` directly for backward compatibility; otherwise returns `\"<election-id>:<precinct-id>\"`."
+  [election-id precinct-id]
+  (let [eid (str (or election-id "national-2026"))
+        pid (str precinct-id)]
+    (if (or (= "national-2026" eid)
+            (str/includes? pid ":"))
+      pid
+      (str eid ":" pid))))
+
+(defn parse-precinct-actor-id
+  "Parses a precinct actor entity-id into `{:election-id ... :precinct-id ...}`."
+  [actor-id default-election-id]
+  (let [s (str actor-id)
+        idx (str/index-of s ":")]
+    (if (and idx (pos? idx))
+      {:election-id (subs s 0 idx)
+       :precinct-id (subs s (inc idx))}
+      {:election-id (str (or default-election-id "national-2026"))
+       :precinct-id s})))

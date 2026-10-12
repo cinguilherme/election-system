@@ -34,11 +34,22 @@ services:
       GRPC_PORT: "50051"
       BROKER_BACKEND: "jetstream"
       NATS_URL: "nats://nats:4222"
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=2 -XX:MaxRAMPercentage=75.0"
     ports:
       - "4000:4000"
       - "50051:50051"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4000 && exec 4<>/dev/tcp/127.0.0.1/50051"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
     depends_on:
       - nats
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 1536M
 
   election-actors:
     build:
@@ -59,13 +70,24 @@ services:
       DB_USER: "election"
       DB_PASSWORD: "election"
       DB_POOL_SIZE: "4"
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=2 -XX:MaxRAMPercentage=75.0"
     ports:
       - "8081:8081"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
     depends_on:
       postgres:
         condition: service_healthy
       async-proxy:
-        condition: service_started
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 1536M
 
   election-api:
     build:
@@ -82,15 +104,26 @@ services:
       DB_USER: "election"
       DB_PASSWORD: "election"
       DB_POOL_SIZE: "2"
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
     depends_on:
       postgres:
         condition: service_healthy
       async-proxy:
-        condition: service_started
+        condition: service_healthy
       election-actors:
-        condition: service_started
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1536M
 
   prometheus:
     image: prom/prometheus:v2.53.0
@@ -99,9 +132,12 @@ services:
     ports:
       - "9090:9090"
     depends_on:
-      - election-api
-      - election-actors
-      - async-proxy
+      election-api:
+        condition: service_healthy
+      election-actors:
+        condition: service_healthy
+      async-proxy:
+        condition: service_healthy
 
   grafana:
     image: grafana/grafana:11.1.0
@@ -128,4 +164,5 @@ services:
       - ./observability/k6:/scripts:ro
     command: ["run", "/scripts/election_load.js"]
     depends_on:
-      - election-api
+      election-api:
+        condition: service_healthy

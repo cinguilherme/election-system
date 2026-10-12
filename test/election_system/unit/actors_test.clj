@@ -104,3 +104,28 @@
       (is (= {:alice 45 :bob 55} (:tallies s2)))
       (is (= {"p-1" 50 "p-2" 50} (:precinct-totals s2)))
       (is (= :db/flush-election-tally (:type (first eff2)))))))
+
+(deftest multi-election-composite-precinct-actor-id-test
+  (testing "Composite precinct actor ID isolates election-id and precinct-id and routes deltas to matching election-tally actor"
+    (let [s0 (precinct/init-precinct-state "senate-sp-2026:sp-p01" {:batch-size 1})
+          [_s1 r1 eff1] (precinct/precinct-step s0
+                                                {:type :cast-vote
+                                                 :voter-id "v-sp-1"
+                                                 :candidate-id :alice}
+                                                {:instant (time/now)
+                                                 :sequence "seq-1"})]
+      (is (= "senate-sp-2026" (:election-id s0)))
+      (is (= "sp-p01" (:precinct-id s0)))
+      (is (= :accepted (:status r1)))
+      (is (true? (:flushed? r1)))
+      (is (= {:type :tell
+              :entity-type :election-tally
+              :entity-id "senate-sp-2026"
+              :message {:type :precinct-delta
+                        :election-id "senate-sp-2026"
+                        :precinct-id "sp-p01"
+                        :deltas {:alice 1}
+                        :precinct-total 1
+                        :flushes 1}}
+             (second eff1))))))
+

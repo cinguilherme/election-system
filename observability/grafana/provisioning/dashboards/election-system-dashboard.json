@@ -10,15 +10,20 @@
   "panels": [
     {
       "id": 1,
-      "title": "Total Votes Cast (by Status)",
+      "title": "Votes Processed by Actors (Accepted vs Duplicate Rejected)",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
       "targets": [
         {
-          "expr": "sum by (status) (election_votes_cast_total)",
-          "legendFormat": "{{status}}",
+          "expr": "sum(actor_messages_processed_total{actor_type=\"precinct\",op=\"cast-vote\",status=\"ok\"})",
+          "legendFormat": "accepted",
           "refId": "A"
+        },
+        {
+          "expr": "sum(actor_messages_processed_total{actor_type=\"precinct\",op=\"cast-vote\",status=\"rejected\"})",
+          "legendFormat": "rejected (duplicate)",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -130,7 +135,7 @@
     },
     {
       "id": 6,
-      "title": "API HTTP Request Latency (p50 / p95 / p99)",
+      "title": "API Caller HTTP Latency (p50 / p95 / p99 by Route)",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
@@ -159,14 +164,14 @@
     },
     {
       "id": 7,
-      "title": "Votes Cast Rate by Candidate & Status (votes/s)",
+      "title": "Votes Cast Rate by Candidate & Mode (votes/s)",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
       "targets": [
         {
-          "expr": "sum by (candidate_id, status) (rate(election_votes_cast_total[30s]))",
-          "legendFormat": "{{candidate_id}} ({{status}})",
+          "expr": "sum by (candidate_id, mode) (rate(election_votes_cast_total[30s]))",
+          "legendFormat": "{{candidate_id}} ({{mode}})",
           "refId": "A"
         }
       ],
@@ -178,31 +183,31 @@
     },
     {
       "id": 8,
-      "title": "Async-Proxy Message Rate (Published vs Delivered/s)",
+      "title": "Async-Proxy Message Rate & JetStream->Actor Transit Lag (p50/p95)",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "targets": [
         {
-          "expr": "sum by (protocol, status) (rate(async_proxy_published_total[30s]))",
-          "legendFormat": "published ({{protocol}} {{status}})",
+          "expr": "histogram_quantile(0.50, sum by (le, actor_type, op) (rate(actor_envelope_transit_lag_seconds_bucket[30s])))",
+          "legendFormat": "Transit Lag p50 {{actor_type}}:{{op}}",
           "refId": "A"
         },
         {
-          "expr": "sum by (protocol, outcome) (rate(async_proxy_delivered_total[30s]))",
-          "legendFormat": "delivered ({{protocol}} {{outcome}})",
+          "expr": "histogram_quantile(0.95, sum by (le, actor_type, op) (rate(actor_envelope_transit_lag_seconds_bucket[30s])))",
+          "legendFormat": "Transit Lag p95 {{actor_type}}:{{op}}",
           "refId": "B"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "unit": "s"
         }
       }
     },
     {
       "id": 9,
-      "title": "Actor Step Throughput (steps/s by Entity & Op)",
+      "title": "Actor Step Throughput (steps/s by Entity, Op & Status)",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
@@ -285,6 +290,84 @@
           "unit": "s"
         }
       }
+    },
+    {
+      "id": 13,
+      "title": "Service CPU Utilization (% of 1.0 CPU Container Quota)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "targets": [
+        {
+          "expr": "rate(process_cpu_seconds_total[30s])",
+          "legendFormat": "{{job}} CPU",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (job) (rate(jvm_gc_collection_seconds_sum[30s]))",
+          "legendFormat": "{{job}} GC CPU overhead",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1.05,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.75 },
+              { "color": "red", "value": 0.95 }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": 14,
+      "title": "Service Memory Usage: Container RSS vs JVM Heap (1.5 GiB Limit)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "targets": [
+        {
+          "expr": "process_resident_memory_bytes",
+          "legendFormat": "{{job}} Container RSS",
+          "refId": "A"
+        },
+        {
+          "expr": "jvm_memory_bytes_used{area=\"heap\"}",
+          "legendFormat": "{{job}} JVM Heap Used",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "max": 1610612736,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1200000000 },
+              { "color": "red", "value": 1500000000 }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        }
+      }
     }
   ],
   "refresh": "5s",
@@ -299,5 +382,5 @@
   },
   "title": "Election System & d-core Scalability",
   "uid": "election-system-scalability",
-  "version": 1
+  "version": 3
 }

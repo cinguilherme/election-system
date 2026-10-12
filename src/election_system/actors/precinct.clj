@@ -12,21 +12,22 @@
   ([precinct-id]
    (init-precinct-state precinct-id {}))
   ([precinct-id {:keys [election-id opens-at closes-at batch-size]}]
-   {:precinct-id (str precinct-id)
-    :election-id (str (or election-id "national-2026"))
-    :opens-at opens-at
-    :closes-at closes-at
-    :batch-size (long (or batch-size 50))
-    :voted-ids #{}
-    :tallies {}
-    :total-votes 0
-    :rejected-duplicates 0
-    :rejected-window 0
-    :pending-ballots []
-    :pending-deltas {}
-    :dirty? false
-    :flushes 0
-    :last-sequence nil}))
+   (let [parsed (domain/parse-precinct-actor-id precinct-id election-id)]
+     {:precinct-id (:precinct-id parsed)
+      :election-id (:election-id parsed)
+      :opens-at opens-at
+      :closes-at closes-at
+      :batch-size (long (or batch-size 50))
+      :voted-ids #{}
+      :tallies {}
+      :total-votes 0
+      :rejected-duplicates 0
+      :rejected-window 0
+      :pending-ballots []
+      :pending-deltas {}
+      :dirty? false
+      :flushes 0
+      :last-sequence nil})))
 
 (defn execute-flush-transition
   "Purely transitions a dirty precinct state into a flushed state and emits

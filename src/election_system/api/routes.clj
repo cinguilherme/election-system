@@ -3,6 +3,7 @@
    Routes incoming votes and real-time tally queries through `ActorClient`
    (backed by `AsyncProxyTransport` over gRPC) and exposes a SQL audit endpoint."
   (:require [cheshire.core :as json]
+            [clojure.string :as str]
             [d-core.actor-system.core :as actor]
             [d-core.core.metrics.prometheus :as prom]
             [d-core.core.metrics.protocol :as metrics-proto]
@@ -43,15 +44,16 @@
   (fn [req]
     (let [election-id (get-in req [:path-params :election-id])
           precinct-id (get-in req [:path-params :precinct-id])
+          actor-id (domain/precinct-actor-id election-id precinct-id)
           body (parse-body req)
           res (actor/ask-sync! actor-client
                                :precinct
-                               precinct-id
+                               actor-id
                                (cond-> {:type :configure-window
                                         :election-id election-id}
                                  (contains? body :opens_at) (assoc :opens-at (:opens_at body))
                                  (contains? body :opens-at) (assoc :opens-at (:opens-at body))
-                                 (contains? body :closes_at) (assoc :closes-at (:closes_at body))
+                                 (contains? body :closes_at) (assoc :closes-at (:closes-at body))
                                  (contains? body :closes-at) (assoc :closes-at (:closes-at body))
                                  (:batch_size body) (assoc :batch-size (:batch_size body))
                                  (:batch-size body) (assoc :batch-size (:batch-size body)))
@@ -88,21 +90,23 @@
                           :error (:error validation)}
                          400))
         (let [{:keys [precinct-id candidate-id] :as vote} (:vote validation)
+              actor-id (domain/precinct-actor-id election-id precinct-id)
               async? (or (true? (:async body))
                          (= "true" (get-in req [:query-params "async"])))
               msg (assoc vote :type :cast-vote)]
           (if async?
             (do
-              (actor/tell! actor-client :precinct precinct-id msg {})
+              (actor/tell! actor-client :precinct actor-id msg {})
               (record-vote-metric! metrics votes-counter election-id candidate-id :async :accepted)
               (json-response {:status "accepted"
                               :mode "async"
                               :ballot-id (:ballot-id vote)
+                              :election-id election-id
                               :precinct-id precinct-id}
                              202))
             (let [reply (actor/ask-sync! actor-client
                                          :precinct
-                                         precinct-id
+                                         actor-id
                                          msg
                                          {:timeout-ms (or timeout-ms 5000)})
                   vote-status (or (:status reply) :error)]
@@ -112,10 +116,12 @@
 (defn- handle-flush-precinct
   [{:keys [actor-client timeout-ms]}]
   (fn [req]
-    (let [precinct-id (get-in req [:path-params :precinct-id])
+    (let [election-id (get-in req [:path-params :election-id])
+          precinct-id (get-in req [:path-params :precinct-id])
+          actor-id (domain/precinct-actor-id election-id precinct-id)
           res (actor/ask-sync! actor-client
                                :precinct
-                               precinct-id
+                               actor-id
                                {:type :flush}
                                {:timeout-ms (or timeout-ms 5000)})]
       (json-response res 200))))
@@ -123,10 +129,12 @@
 (defn- handle-precinct-tally
   [{:keys [actor-client timeout-ms]}]
   (fn [req]
-    (let [precinct-id (get-in req [:path-params :precinct-id])
+    (let [election-id (get-in req [:path-params :election-id])
+          precinct-id (get-in req [:path-params :precinct-id])
+          actor-id (domain/precinct-actor-id election-id precinct-id)
           res (actor/ask-sync! actor-client
                                :precinct
-                               precinct-id
+                               actor-id
                                {:type :get-tally}
                                {:timeout-ms (or timeout-ms 5000)})]
       (json-response res 200))))
@@ -171,6 +179,17 @@
        :headers {"content-type" "text/plain; version=0.0.4"}
        :body "# HELP election_system_up Election system up indicator\n# TYPE election_system_up gauge\nelection_system_up 1.0\n"})))
 
+(defn normalize-election-uri
+  "Normalizes dynamic `:election-id` and `:precinct-id` segments in request URIs
+   to prevent label cardinality explosion across multi-election load tests."
+  [req]
+  (let [uri (or (:uri req) "/")]
+    (-> uri
+        (str/replace #"^/v1/elections/[^/]+/precincts/[^/]+/(window|flush|tally)$"
+                     "/v1/elections/:election-id/precincts/:precinct-id/$1")
+        (str/replace #"^/v1/elections/[^/]+/(votes|tally|audit)$"
+                     "/v1/elections/:election-id/$1"))))
+
 (defn make-handler
   "Creates the Ring handler for the Election System API Ingress service."
   [{:keys [metrics prom-metrics] :as ctx}]
@@ -197,6 +216,7 @@
                          ["/precincts/:precinct-id/tally" {:get {:handler (handle-precinct-tally enriched-ctx)}}]]])
                       (ring/create-default-handler))]
     (if eff-metrics
-      (wrappers/wrap-http-metrics base-handler eff-metrics {:service "election-api"})
+      (wrappers/wrap-http-metrics base-handler eff-metrics {:service "election-api"
+                                                            :normalize-uri-fn normalize-election-uri})
       base-handler)))
 
