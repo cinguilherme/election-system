@@ -1,0 +1,47 @@
+{:system
+ {:duct.module/logging {}
+
+  :d-core.core.clients.postgres/client
+  {:jdbc-url "jdbc:postgresql://localhost:5432/election_db?user=election&password=election"
+   :maximum-pool-size 4}
+
+  :d-core.core.databases.postgres/db
+  {:postgres-client #ig/ref :d-core.core.clients.postgres/client
+   :logger #ig/ref :duct/logger}
+
+  :election-system.db/init
+  {:db #ig/ref :d-core.core.databases.postgres/db
+   :engine :postgres}
+
+  :election-system.db/metrics {}
+
+  :election-system.db/effect-handler
+  {:db #ig/ref :election-system.db/init
+   :metrics #ig/ref :election-system.db/metrics
+   :logger #ig/ref :duct/logger}
+
+  :d-core.actor-system/storage
+  {:type :sql
+   :db #ig/ref :election-system.db/init}
+
+  :d-core.actor-system/transport
+  {:type :async-proxy
+   :host "localhost"
+   :port 50051
+   :partition 0
+   :partitions 4}
+
+  :election-system/entities
+  {:batch-size 100
+   :flush-every-n 10
+   :tick-interval-ms 1000}
+
+  :d-core.actor-system/runtime
+  {:transport #ig/ref :d-core.actor-system/transport
+   :storage #ig/ref :d-core.actor-system/storage
+   :entities #ig/ref :election-system/entities
+   :db #ig/ref :election-system.db/init
+   :effect-handler #ig/ref :election-system.db/effect-handler
+   :options {:partition 0
+             :partitions 4
+             :watchdog-interval-ms 1000}}}}

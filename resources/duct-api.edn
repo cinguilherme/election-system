@@ -1,0 +1,21 @@
+{:system
+ {:duct.module/logging {}
+
+  :d-core.actor-system/transport
+  {:type :async-proxy
+   :host "localhost"
+   :port 50051
+   :partitions 4}
+
+  :d-core.actor-system/client
+  {:transport #ig/ref :d-core.actor-system/transport
+   :options {:partitions 4
+             :timeout-ms 5000}}
+
+  :election-system.api/handler
+  {:actor-client #ig/ref :d-core.actor-system/client
+   :timeout-ms 5000}
+
+  :election-system.api/jetty
+  {:handler #ig/ref :election-system.api/handler
+   :port 8080}}}

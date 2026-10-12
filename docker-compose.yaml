@@ -1,0 +1,36 @@
+services:
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: election
+      POSTGRES_PASSWORD: election
+      POSTGRES_DB: election_db
+    ports:
+      - "5432:5432"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: election_db
+      MYSQL_USER: election
+      MYSQL_PASSWORD: election
+    ports:
+      - "3306:3306"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M

@@ -1,0 +1,6 @@
+{:system
+ {:duct.module/logging {}
+
+  :election-system/entities
+  {:batch-size 50
+   :flush-every-n 5}}}
