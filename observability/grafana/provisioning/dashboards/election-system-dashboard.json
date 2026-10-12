@@ -1,0 +1,303 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total Votes Cast (by Status)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (status) (election_votes_cast_total)",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Active Actor Entities (by Type)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (actor_type) (actor_active_entities)",
+          "legendFormat": "{{actor_type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "DB Write-Compression Ratio (Rows / SQL Stmt)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(sql_batch_rows_total) / clamp_min(sum(sql_statements_total), 1)",
+          "legendFormat": "Rows per SQL Statement",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "yellow", "value": null },
+              { "color": "green", "value": 10 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Total Logical Rows vs Actual SQL Statements",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(sql_batch_rows_total)",
+          "legendFormat": "Logical Rows Written",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(sql_statements_total)",
+          "legendFormat": "Actual SQL Statements",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "API HTTP Request Throughput (req/s by URI & Status)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "expr": "sum by (uri, status) (rate(http_requests_total[30s]))",
+          "legendFormat": "{{uri}} [{{status}}]",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "API HTTP Request Latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, uri) (rate(http_request_duration_seconds_bucket[30s])))",
+          "legendFormat": "p50 {{uri}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, uri) (rate(http_request_duration_seconds_bucket[30s])))",
+          "legendFormat": "p95 {{uri}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, uri) (rate(http_request_duration_seconds_bucket[30s])))",
+          "legendFormat": "p99 {{uri}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Votes Cast Rate by Candidate & Status (votes/s)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum by (candidate_id, status) (rate(election_votes_cast_total[30s]))",
+          "legendFormat": "{{candidate_id}} ({{status}})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Async-Proxy Message Rate (Published vs Delivered/s)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum by (protocol, status) (rate(async_proxy_published_total[30s]))",
+          "legendFormat": "published ({{protocol}} {{status}})",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (protocol, outcome) (rate(async_proxy_delivered_total[30s]))",
+          "legendFormat": "delivered ({{protocol}} {{outcome}})",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Actor Step Throughput (steps/s by Entity & Op)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "expr": "sum by (actor_type, op, status) (rate(actor_messages_processed_total[30s]))",
+          "legendFormat": "{{actor_type}}:{{op}} ({{status}})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Actor Step Execution Latency (p95 / p99)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, actor_type, op) (rate(actor_step_duration_seconds_bucket[30s])))",
+          "legendFormat": "p95 {{actor_type}}:{{op}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, actor_type, op) (rate(actor_step_duration_seconds_bucket[30s])))",
+          "legendFormat": "p99 {{actor_type}}:{{op}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Database Write Compression: Logical Rows/s vs Actual SQL Statements/s",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "targets": [
+        {
+          "expr": "sum by (table) (rate(sql_batch_rows_total[30s]))",
+          "legendFormat": "Logical Rows/s ({{table}})",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (table, operation) (rate(sql_statements_total[30s]))",
+          "legendFormat": "SQL Statements/s ({{table}}:{{operation}})",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "SQL Statement Latency p95 (Constrained Postgres: 0.5 CPU / 4 Conn Pool)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, table, operation) (rate(sql_operation_duration_seconds_bucket[30s])))",
+          "legendFormat": "p95 {{table}}:{{operation}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["d-core", "election-system", "actors", "async-proxy"],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "title": "Election System & d-core Scalability",
+  "uid": "election-system-scalability",
+  "version": 1
+}

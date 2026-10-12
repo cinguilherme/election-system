@@ -1,4 +1,4 @@
-.PHONY: tests unit integration benchmark lint clean
+.PHONY: tests unit integration benchmark lint clean up down logs load-test
 
 tests:
 	clojure -M:test
@@ -14,6 +14,18 @@ benchmark:
 
 lint:
 	clojure -M:lint --lint src test
+
+up:
+	docker compose up --build -d
+
+down:
+	docker compose down -v
+
+logs:
+	docker compose logs -f
+
+load-test:
+	docker compose run --rm k6
 
 clean:
 	rm -rf target .cpcache .nrepl-port

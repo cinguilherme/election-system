@@ -14,23 +14,118 @@ services:
       POSTGRES_DB: election_db
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U election -d election_db"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
     deploy:
       resources:
         limits:
           cpus: "0.50"
           memory: 256M
 
-  mysql:
-    image: mysql:8.4
+  async-proxy:
+    build:
+      context: ..
+      dockerfile: d-core-async-proxy/Dockerfile
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: election_db
-      MYSQL_USER: election
-      MYSQL_PASSWORD: election
+      PORT: "4000"
+      GRPC_PORT: "50051"
+      BROKER_BACKEND: "jetstream"
+      NATS_URL: "nats://nats:4222"
     ports:
-      - "3306:3306"
-    deploy:
-      resources:
-        limits:
-          cpus: "0.50"
-          memory: 512M
+      - "4000:4000"
+      - "50051:50051"
+    depends_on:
+      - nats
+
+  election-actors:
+    build:
+      context: ..
+      dockerfile: election-system/Dockerfile
+    environment:
+      ROLE: "actors"
+      METRICS_PORT: "8081"
+      ASYNC_PROXY_HOST: "async-proxy"
+      ASYNC_PROXY_GRPC_PORT: "50051"
+      WORKER_COUNT: "4"
+      BATCH_SIZE: "50"
+      FLUSH_EVERY_N: "5"
+      TICK_INTERVAL_MS: "2000"
+      ELECTION_ID: "national-2026"
+      DB_ENGINE: "postgres"
+      JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
+      DB_USER: "election"
+      DB_PASSWORD: "election"
+      DB_POOL_SIZE: "4"
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      async-proxy:
+        condition: service_started
+
+  election-api:
+    build:
+      context: ..
+      dockerfile: election-system/Dockerfile
+    environment:
+      ROLE: "api"
+      HTTP_PORT: "8080"
+      ASYNC_PROXY_HOST: "async-proxy"
+      ASYNC_PROXY_GRPC_PORT: "50051"
+      WORKER_COUNT: "4"
+      DB_ENGINE: "postgres"
+      JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
+      DB_USER: "election"
+      DB_PASSWORD: "election"
+      DB_POOL_SIZE: "2"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      async-proxy:
+        condition: service_started
+      election-actors:
+        condition: service_started
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - election-api
+      - election-actors
+      - async-proxy
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "admin"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/etc/grafana/provisioning/dashboards/election-system-dashboard.json"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  k6:
+    image: grafana/k6:0.52.0
+    profiles: ["load"]
+    environment:
+      API_URL: "http://election-api:8080"
+      ELECTION_ID: "national-2026"
+    volumes:
+      - ./observability/k6:/scripts:ro
+    command: ["run", "/scripts/election_load.js"]
+    depends_on:
+      - election-api

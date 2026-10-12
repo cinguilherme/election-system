@@ -4,6 +4,9 @@
    (backed by `AsyncProxyTransport` over gRPC) and exposes a SQL audit endpoint."
   (:require [cheshire.core :as json]
             [d-core.actor-system.core :as actor]
+            [d-core.core.metrics.prometheus :as prom]
+            [d-core.core.metrics.protocol :as metrics-proto]
+            [d-core.core.metrics.wrappers :as wrappers]
             [d-core.libs.time :as time]
             [election-system.db.writer :as writer]
             [election-system.domain.election :as domain]
@@ -65,24 +68,33 @@
                 400)
     500))
 
+(defn- record-vote-metric!
+  [metrics votes-counter election-id candidate-id mode status]
+  (when (and metrics votes-counter)
+    (wrappers/inc-labeled! metrics votes-counter
+                           [election-id (or candidate-id "unknown") mode status])))
+
 (defn- handle-cast-vote
-  [{:keys [actor-client timeout-ms]}]
+  [{:keys [actor-client metrics votes-counter timeout-ms]}]
   (fn [req]
     (let [election-id (get-in req [:path-params :election-id])
           body (parse-body req)
           validation (domain/validate-vote-payload (assoc body :election-id election-id))]
       (if-not (:valid? validation)
-        (json-response {:status "rejected"
-                        :reason "invalid-payload"
-                        :error (:error validation)}
-                       400)
-        (let [{:keys [precinct-id] :as vote} (:vote validation)
+        (do
+          (record-vote-metric! metrics votes-counter election-id nil :sync :invalid-payload)
+          (json-response {:status "rejected"
+                          :reason "invalid-payload"
+                          :error (:error validation)}
+                         400))
+        (let [{:keys [precinct-id candidate-id] :as vote} (:vote validation)
               async? (or (true? (:async body))
                          (= "true" (get-in req [:query-params "async"])))
               msg (assoc vote :type :cast-vote)]
           (if async?
             (do
               (actor/tell! actor-client :precinct precinct-id msg {})
+              (record-vote-metric! metrics votes-counter election-id candidate-id :async :accepted)
               (json-response {:status "accepted"
                               :mode "async"
                               :ballot-id (:ballot-id vote)
@@ -92,7 +104,9 @@
                                          :precinct
                                          precinct-id
                                          msg
-                                         {:timeout-ms (or timeout-ms 5000)})]
+                                         {:timeout-ms (or timeout-ms 5000)})
+                  vote-status (or (:status reply) :error)]
+              (record-vote-metric! metrics votes-counter election-id candidate-id :sync vote-status)
               (json-response reply (status-code-for-vote-reply reply)))))))))
 
 (defn- handle-flush-precinct
@@ -148,17 +162,41 @@
                                      true)}
                      200))))
 
+(defn- handle-metrics
+  [{:keys [metrics]}]
+  (if metrics
+    (prom/ring-metrics-handler metrics)
+    (fn [_req]
+      {:status 200
+       :headers {"content-type" "text/plain; version=0.0.4"}
+       :body "# HELP election_system_up Election system up indicator\n# TYPE election_system_up gauge\nelection_system_up 1.0\n"})))
+
 (defn make-handler
   "Creates the Ring handler for the Election System API Ingress service."
-  [ctx]
-  (ring/ring-handler
-   (ring/router
-    [["/health" {:get {:handler (handle-health ctx)}}]
-     ["/v1/elections/:election-id"
-      ["/votes" {:post {:handler (handle-cast-vote ctx)}}]
-      ["/tally" {:get {:handler (handle-election-tally ctx)}}]
-      ["/audit" {:get {:handler (handle-election-audit ctx)}}]
-      ["/precincts/:precinct-id/window" {:post {:handler (handle-configure-window ctx)}}]
-      ["/precincts/:precinct-id/flush" {:post {:handler (handle-flush-precinct ctx)}}]
-      ["/precincts/:precinct-id/tally" {:get {:handler (handle-precinct-tally ctx)}}]]])
-   (ring/create-default-handler)))
+  [{:keys [metrics prom-metrics] :as ctx}]
+  (let [eff-metrics (or metrics prom-metrics)
+        votes-counter (when eff-metrics
+                        (metrics-proto/counter
+                         eff-metrics
+                         {:name :election_votes_cast_total
+                          :help "Total ballot submissions processed by election API"
+                          :labels [:election_id :candidate_id :mode :status]}))
+        enriched-ctx (assoc ctx
+                            :metrics eff-metrics
+                            :votes-counter votes-counter)
+        base-handler (ring/ring-handler
+                      (ring/router
+                       [["/health" {:get {:handler (handle-health enriched-ctx)}}]
+                        ["/metrics" {:get {:handler (handle-metrics enriched-ctx)}}]
+                        ["/v1/elections/:election-id"
+                         ["/votes" {:post {:handler (handle-cast-vote enriched-ctx)}}]
+                         ["/tally" {:get {:handler (handle-election-tally enriched-ctx)}}]
+                         ["/audit" {:get {:handler (handle-election-audit enriched-ctx)}}]
+                         ["/precincts/:precinct-id/window" {:post {:handler (handle-configure-window enriched-ctx)}}]
+                         ["/precincts/:precinct-id/flush" {:post {:handler (handle-flush-precinct enriched-ctx)}}]
+                         ["/precincts/:precinct-id/tally" {:get {:handler (handle-precinct-tally enriched-ctx)}}]]])
+                      (ring/create-default-handler))]
+    (if eff-metrics
+      (wrappers/wrap-http-metrics base-handler eff-metrics {:service "election-api"})
+      base-handler)))
+

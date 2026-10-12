@@ -1,0 +1,25 @@
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+
+scrape_configs:
+  - job_name: 'election-api'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['election-api:8080']
+        labels:
+          tier: 'api'
+
+  - job_name: 'election-actors'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['election-actors:8081']
+        labels:
+          tier: 'actors'
+
+  - job_name: 'async-proxy'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['async-proxy:4000']
+        labels:
+          tier: 'proxy'

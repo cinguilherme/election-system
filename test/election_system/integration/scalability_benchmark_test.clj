@@ -148,6 +148,18 @@
                                                       :voter_id "voter-0-0"
                                                       :candidate_id "alice"})]
                   (is (= 409 (:status dup-after-rehydrate)))
-                  (is (= "duplicate-vote" (get-in dup-after-rehydrate [:data :reason]))))))
+                  (is (= "duplicate-vote" (get-in dup-after-rehydrate [:data :reason])))))
+
+              ;; 9. Verify Prometheus /metrics endpoint captures all multi-tier metrics
+              (let [metrics-resp (handler {:request-method :get :uri "/metrics" :headers {}})
+                    body (:body metrics-resp)]
+                (is (= 200 (:status metrics-resp)))
+                (is (.contains ^String body "http_requests_total"))
+                (is (.contains ^String body "election_votes_cast_total"))
+                (is (.contains ^String body "async_proxy_published_total"))
+                (is (.contains ^String body "actor_messages_processed_total"))
+                (is (.contains ^String body "actor_active_entities"))
+                (is (.contains ^String body "sql_statements_total"))
+                (is (.contains ^String body "sql_batch_rows_total"))))
             (finally
               (sys/stop-multi-tier-test-cluster! cluster))))))))
