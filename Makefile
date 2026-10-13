@@ -1,4 +1,4 @@
-.PHONY: tests unit integration benchmark lint clean up down logs load-test stress-test
+.PHONY: tests unit integration benchmark lint clean up down logs load-test stress-test profile profile-cpu profile-mem threaddump reset-data
 
 tests:
 	clojure -M:test
@@ -42,5 +42,50 @@ stress-test:
 		-e SLEEP_S=0 \
 		k6
 
+# JVM Diagnostics & Flamegraphs using async-profiler
+# Usage: make profile SERVICE=async-proxy DURATION=30 EVENT=itimer
+SERVICE ?= async-proxy
+DURATION ?= 30
+EVENT ?= itimer
+
+profile:
+	@mkdir -p profiles
+	@CID=$$(docker compose ps -q $(SERVICE)); \
+	if [ -z "$$CID" ]; then \
+		echo "Error: Service $(SERVICE) is not running."; exit 1; \
+	fi; \
+	OUT_FILE="profiles/$(SERVICE)-$(EVENT)-$$(date +%Y%m%d-%H%M%S).html"; \
+	echo "Profiling $(SERVICE) ($$CID) for $(DURATION)s (event: $(EVENT))..."; \
+	docker exec $$CID /opt/async-profiler/bin/asprof -d $(DURATION) -e $(EVENT) -f /tmp/profile.html 1 && \
+	docker cp $$CID:/tmp/profile.html $$OUT_FILE && \
+	echo "Flamegraph saved to: $$OUT_FILE" && \
+	echo "To view: open $$OUT_FILE"
+
+profile-cpu:
+	@$(MAKE) profile SERVICE=$(SERVICE) DURATION=$(DURATION) EVENT=itimer
+
+profile-mem:
+	@$(MAKE) profile SERVICE=$(SERVICE) DURATION=$(DURATION) EVENT=alloc
+
+threaddump:
+	@mkdir -p profiles
+	@CID=$$(docker compose ps -q $(SERVICE)); \
+	if [ -z "$$CID" ]; then \
+		echo "Error: Service $(SERVICE) is not running."; exit 1; \
+	fi; \
+	OUT_FILE="profiles/$(SERVICE)-threaddump-$$(date +%Y%m%d-%H%M%S).txt"; \
+	echo "Capturing thread dump for $(SERVICE) ($$CID)..."; \
+	docker exec $$CID jcmd 1 Thread.print > $$OUT_FILE && \
+	echo "Thread dump saved to: $$OUT_FILE"
+
+# Fast benchmark data reset without restarting containers
+reset-data:
+	@echo "Resetting PostgreSQL tables..."
+	@docker compose exec -T postgres psql -U election -d election_db -c "TRUNCATE TABLE ballots, precinct_tallies, election_tallies;"
+	@echo "Purging NATS JetStream messages..."
+	@docker compose exec -T nats nats stream purge -f proxy_votes >/dev/null 2>&1 || true
+	@echo "Data reset complete."
+
 clean:
-	rm -rf target .cpcache .nrepl-port
+	rm -rf target .cpcache .nrepl-port profiles
+
