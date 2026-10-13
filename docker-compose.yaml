@@ -25,7 +25,7 @@ services:
           cpus: "0.50"
           memory: 256M
 
-  async-proxy:
+  async-proxy-ingress:
     build:
       context: ..
       dockerfile: d-core-async-proxy/Dockerfile
@@ -34,7 +34,7 @@ services:
       GRPC_PORT: "50051"
       BROKER_BACKEND: "jetstream"
       NATS_URL: "nats://nats:4222"
-      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=2 -XX:MaxRAMPercentage=75.0"
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
     ports:
       - "4000:4000"
       - "50051:50051"
@@ -50,8 +50,36 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.00"
-          memory: 1536M
+          cpus: "0.50"
+          memory: 1024M
+
+  async-proxy-egress:
+    build:
+      context: ..
+      dockerfile: d-core-async-proxy/Dockerfile
+    environment:
+      PORT: "4001"
+      GRPC_PORT: "50052"
+      BROKER_BACKEND: "jetstream"
+      NATS_URL: "nats://nats:4222"
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
+    ports:
+      - "4001:4001"
+      - "50052:50052"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4001 && exec 4<>/dev/tcp/127.0.0.1/50052"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      - nats
+    cap_add:
+      - SYS_PTRACE
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 1024M
 
   election-actors:
     build:
@@ -60,8 +88,8 @@ services:
     environment:
       ROLE: "actors"
       METRICS_PORT: "8081"
-      ASYNC_PROXY_HOST: "async-proxy"
-      ASYNC_PROXY_GRPC_PORT: "50051"
+      ASYNC_PROXY_HOST: "async-proxy-egress"
+      ASYNC_PROXY_GRPC_PORT: "50052"
       WORKER_COUNT: "4"
       BATCH_SIZE: "50"
       FLUSH_EVERY_N: "5"
@@ -83,7 +111,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      async-proxy:
+      async-proxy-egress:
         condition: service_healthy
     cap_add:
       - SYS_PTRACE
@@ -100,7 +128,7 @@ services:
     environment:
       ROLE: "api"
       HTTP_PORT: "8080"
-      ASYNC_PROXY_HOST: "async-proxy"
+      ASYNC_PROXY_HOST: "async-proxy-ingress"
       ASYNC_PROXY_GRPC_PORT: "50051"
       WORKER_COUNT: "4"
       DB_ENGINE: "postgres"
@@ -119,7 +147,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      async-proxy:
+      async-proxy-ingress:
         condition: service_healthy
       election-actors:
         condition: service_healthy
@@ -142,7 +170,9 @@ services:
         condition: service_healthy
       election-actors:
         condition: service_healthy
-      async-proxy:
+      async-proxy-ingress:
+        condition: service_healthy
+      async-proxy-egress:
         condition: service_healthy
 
   grafana:

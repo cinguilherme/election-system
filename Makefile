@@ -43,8 +43,8 @@ stress-test:
 		k6
 
 # JVM Diagnostics & Flamegraphs using async-profiler
-# Usage: make profile SERVICE=async-proxy DURATION=30 EVENT=itimer
-SERVICE ?= async-proxy
+# Usage: make profile SERVICE=async-proxy-ingress DURATION=30 EVENT=itimer
+SERVICE ?= async-proxy-ingress
 DURATION ?= 30
 EVENT ?= itimer
 
@@ -84,6 +84,8 @@ reset-data:
 	@docker compose exec -T postgres psql -U election -d election_db -c "TRUNCATE TABLE ballots, precinct_tallies, election_tallies;"
 	@echo "Purging NATS JetStream messages..."
 	@docker compose exec -T nats nats stream purge -f proxy_votes >/dev/null 2>&1 || true
+	@docker compose exec -T nats nats stream purge -f proxy_actor_precinct >/dev/null 2>&1 || true
+	@docker compose exec -T nats nats stream purge -f proxy_actor_election >/dev/null 2>&1 || true
 	@echo "Data reset complete."
 
 clean:

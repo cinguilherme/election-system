@@ -17,9 +17,16 @@ scrape_configs:
         labels:
           tier: 'actors'
 
-  - job_name: 'async-proxy'
+  - job_name: 'async-proxy-ingress'
     metrics_path: '/metrics'
     static_configs:
-      - targets: ['async-proxy:4000']
+      - targets: ['async-proxy-ingress:4000']
         labels:
-          tier: 'proxy'
+          tier: 'proxy-ingress'
+
+  - job_name: 'async-proxy-egress'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['async-proxy-egress:4001']
+        labels:
+          tier: 'proxy-egress'
