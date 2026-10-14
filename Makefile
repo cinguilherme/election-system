@@ -1,4 +1,4 @@
-.PHONY: tests unit integration benchmark lint clean up down logs load-test stress-test stress-test-single profile profile-cpu profile-mem threaddump reset-data build-base ensure-base
+.PHONY: tests unit integration benchmark lint clean up down logs load-test load-test-docker stress-test stress-test-docker stress-test-single rate-test rate-test-docker profile profile-cpu profile-mem threaddump reset-data build-base ensure-base
 
 # Prebuild shared base image containing diagnostic utilities and async-profiler
 build-base:
@@ -38,13 +38,38 @@ down:
 logs:
 	docker compose logs -f
 
+K6_HOST ?= $(shell command -v k6 2>/dev/null)
+
 # Default progressive 5-stage stress staircase (50 -> 150 -> 300 -> 500 VUs over 2m45s)
 load-test:
+	@if [ -n "$(K6_HOST)" ] && [ -z "$(USE_DOCKER)" ]; then \
+		echo "Running load-test natively on host using $(K6_HOST) -> http://127.0.0.1:8080..."; \
+		API_URL=$${API_URL:-http://127.0.0.1:8080} k6 run observability/k6/election_load.js; \
+	else \
+		$(MAKE) load-test-docker; \
+	fi
+
+load-test-docker:
 	docker compose run --rm k6
 
-# Extreme breaking-point test with distributed multi-instance load generation
-# 1000 total VUs split across k6-1 (segment 0:1/2) and k6-2 (segment 1/2:1) with zero think-time
+# Extreme breaking-point concurrency test (100 -> 300 -> 600 -> 1000 VUs with zero think-time)
 stress-test:
+	@if [ -n "$(K6_HOST)" ] && [ -z "$(USE_DOCKER)" ]; then \
+		echo "Running stress-test natively on host using $(K6_HOST) -> http://127.0.0.1:8080..."; \
+		STAGE_1_VUS=100 STAGE_1_DURATION=20s \
+		STAGE_2_VUS=300 STAGE_2_DURATION=45s \
+		STAGE_3_VUS=600 STAGE_3_DURATION=60s \
+		STAGE_4_VUS=1000 STAGE_4_DURATION=60s \
+		STAGE_5_DURATION=20s \
+		SLEEP_S=0 \
+		API_URL=$${API_URL:-http://127.0.0.1:8080} \
+		k6 run observability/k6/election_load.js; \
+	else \
+		$(MAKE) stress-test-docker; \
+	fi
+
+# Distributed multi-instance Docker stress-test (split across k6-1 and k6-2)
+stress-test-docker:
 	@docker compose rm -f k6-1 k6-2 2>/dev/null || true
 	STAGE_1_VUS=100 STAGE_1_DURATION=20s \
 	STAGE_2_VUS=300 STAGE_2_DURATION=45s \
@@ -54,7 +79,7 @@ stress-test:
 	SLEEP_S=0 \
 	docker compose up --force-recreate k6-1 k6-2
 
-# Single-instance stress-test for baseline comparison
+# Single-instance Docker stress-test for baseline comparison
 stress-test-single:
 	docker compose run --rm \
 		-e STAGE_1_VUS=100 -e STAGE_1_DURATION=20s \
@@ -63,6 +88,35 @@ stress-test-single:
 		-e STAGE_4_VUS=1000 -e STAGE_4_DURATION=60s \
 		-e STAGE_5_DURATION=20s \
 		-e SLEEP_S=0 \
+		k6
+
+# Open-model arrival-rate stress test (2,000 -> 5,000 -> 8,000 -> 12,000 req/s)
+# Directly forces target request volume regardless of response latency to identify true breaking points
+rate-test:
+	@if [ -n "$(K6_HOST)" ] && [ -z "$(USE_DOCKER)" ]; then \
+		echo "Running open-model rate-test natively on host using $(K6_HOST) -> http://127.0.0.1:8080..."; \
+		LOAD_TYPE=rate \
+		STAGE_1_RATE=2000 STAGE_1_DURATION=20s \
+		STAGE_2_RATE=5000 STAGE_2_DURATION=40s \
+		STAGE_3_RATE=8000 STAGE_3_DURATION=60s \
+		STAGE_4_RATE=12000 STAGE_4_DURATION=60s \
+		STAGE_5_DURATION=15s \
+		MAX_VUS=3500 \
+		API_URL=$${API_URL:-http://127.0.0.1:8080} \
+		k6 run observability/k6/election_load.js; \
+	else \
+		$(MAKE) rate-test-docker; \
+	fi
+
+rate-test-docker:
+	docker compose run --rm \
+		-e LOAD_TYPE=rate \
+		-e STAGE_1_RATE=2000 -e STAGE_1_DURATION=20s \
+		-e STAGE_2_RATE=5000 -e STAGE_2_DURATION=40s \
+		-e STAGE_3_RATE=8000 -e STAGE_3_DURATION=60s \
+		-e STAGE_4_RATE=12000 -e STAGE_4_DURATION=60s \
+		-e STAGE_5_DURATION=15s \
+		-e MAX_VUS=2500 \
 		k6
 
 # JVM Diagnostics & Flamegraphs using async-profiler
@@ -103,17 +157,21 @@ threaddump:
 
 # Fast benchmark data reset
 reset-data:
+	@echo "Stopping actors and API nodes to flush in-flight state..."
+	@docker compose stop election-actors-1 election-actors-2 election-api-1 election-api-2
 	@echo "Resetting PostgreSQL tables..."
 	@docker compose exec -T postgres psql -U election -d election_db -c "TRUNCATE TABLE ballots, precinct_tallies, election_tallies, actor_snapshots;"
 	@echo "Purging NATS JetStream messages..."
 	@docker compose exec -T nats nats stream purge -f proxy_votes >/dev/null 2>&1 || true
 	@docker compose exec -T nats nats stream purge -f proxy_actor_precinct >/dev/null 2>&1 || true
 	@docker compose exec -T nats nats stream purge -f proxy_actor_election >/dev/null 2>&1 || true
-	@echo "Restarting actors and API nodes to reset state..."
-	@docker compose restart election-actors-1 election-actors-2 election-api-1 election-api-2
+	@echo "Starting actors and API nodes with clean state..."
+	@docker compose start election-actors-1 election-actors-2 election-api-1 election-api-2
 	@echo "Restarting reverse proxy..."
 	@docker compose restart election-api
-	@echo "Data reset complete."
+	@echo "Waiting for cluster to become healthy..."
+	@until [ "$$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health 2>/dev/null)" = "200" ]; do sleep 1; done
+	@echo "Data reset complete and cluster is ready."
 
 clean:
 	rm -rf target .cpcache .nrepl-port profiles

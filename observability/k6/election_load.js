@@ -13,7 +13,7 @@ const serverErrors = new Counter('server_5xx_or_timeout_errors');
 const votesAccepted = new Counter('votes_accepted_total');
 const votesDeduplicated = new Counter('votes_deduplicated_total');
 
-const BASE_URL = __ENV.API_URL || 'http://election-api:8080';
+const BASE_URL = __ENV.API_URL || 'http://127.0.0.1:8080';
 const STATES = (__ENV.STATES || 'sp,rj,mg,ba,pr,rs,pe,ce,pa,sc').split(',');
 const PRECINCTS_PER_STATE = parseInt(__ENV.PRECINCTS_PER_STATE || '25', 10);
 const SLEEP_S = parseFloat(__ENV.SLEEP_S || '0.001');
@@ -39,10 +39,60 @@ const s2Total = parseInt(__ENV.STAGE_2_VUS || '150', 10);
 const s3Total = parseInt(__ENV.STAGE_3_VUS || '300', 10);
 const s4Total = parseInt(__ENV.STAGE_4_VUS || '500', 10);
 
-export const options = {
-  setupTimeout: '60s',
-  teardownTimeout: '90s',
-  scenarios: {
+const LOAD_TYPE = __ENV.LOAD_TYPE || 'vus';
+const rate1 = parseInt(__ENV.STAGE_1_RATE || '2000', 10);
+const rate2 = parseInt(__ENV.STAGE_2_RATE || '5000', 10);
+const rate3 = parseInt(__ENV.STAGE_3_RATE || '8000', 10);
+const rate4 = parseInt(__ENV.STAGE_4_RATE || '12000', 10);
+const maxRateVus = parseInt(__ENV.MAX_VUS || '3500', 10);
+
+function getScenarios() {
+  if (LOAD_TYPE === 'rate') {
+    const voterMax = Math.max(10, Math.round(maxRateVus * 0.85));
+    const voterPre = Math.max(2, Math.min(Math.round(voterMax * 0.25), voterMax));
+    const obsMax = Math.max(5, Math.round(maxRateVus * 0.15));
+    const obsPre = Math.max(1, Math.min(Math.round(obsMax * 0.25), obsMax));
+
+    return {
+      // Open-model arrival-rate: dedicated voters stream (90% target req/s)
+      voters: {
+        executor: 'ramping-arrival-rate',
+        exec: 'castVotes',
+        startRate: 0,
+        timeUnit: '1s',
+        preAllocatedVUs: voterPre,
+        maxVUs: voterMax,
+        stages: [
+          { duration: s1Duration, target: Math.round(rate1 * 0.90) },
+          { duration: s2Duration, target: Math.round(rate2 * 0.90) },
+          { duration: s3Duration, target: Math.round(rate3 * 0.90) },
+          { duration: s4Duration, target: Math.round(rate4 * 0.90) },
+          { duration: s5Duration, target: 0 },
+        ],
+        gracefulStop: '10s',
+      },
+      // Open-model arrival-rate: public tally observers stream (10% target req/s)
+      tally_observers: {
+        executor: 'ramping-arrival-rate',
+        exec: 'observeTallies',
+        startRate: 0,
+        timeUnit: '1s',
+        preAllocatedVUs: obsPre,
+        maxVUs: obsMax,
+        stages: [
+          { duration: s1Duration, target: Math.round(rate1 * 0.10) },
+          { duration: s2Duration, target: Math.round(rate2 * 0.10) },
+          { duration: s3Duration, target: Math.round(rate3 * 0.10) },
+          { duration: s4Duration, target: Math.round(rate4 * 0.10) },
+          { duration: s5Duration, target: 0 },
+        ],
+        gracefulStop: '10s',
+      },
+    };
+  }
+
+  // Default closed-loop ramping-vus
+  return {
     // Dedicated Pool 1: High-throughput ballot casting (hotpath)
     voters: {
       executor: 'ramping-vus',
@@ -71,7 +121,13 @@ export const options = {
       ],
       gracefulRampDown: '5s',
     },
-  },
+  };
+}
+
+export const options = {
+  setupTimeout: '60s',
+  teardownTimeout: '90s',
+  scenarios: getScenarios(),
   thresholds: {
     http_req_duration: ['p(95)<250'],
     vote_ingest_duration: ['p(95)<200'],

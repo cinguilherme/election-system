@@ -364,6 +364,12 @@ services:
       VOTER_SLEEP_S: "${VOTER_SLEEP_S:-0.001}"
       OBSERVER_SLEEP_S: "${OBSERVER_SLEEP_S:-0.1}"
       REQ_TIMEOUT: "${REQ_TIMEOUT:-5s}"
+      LOAD_TYPE: "${LOAD_TYPE:-vus}"
+      STAGE_1_RATE: "${STAGE_1_RATE:-2000}"
+      STAGE_2_RATE: "${STAGE_2_RATE:-5000}"
+      STAGE_3_RATE: "${STAGE_3_RATE:-8000}"
+      STAGE_4_RATE: "${STAGE_4_RATE:-12000}"
+      MAX_VUS: "${MAX_VUS:-3500}"
     volumes:
       - ./observability/k6:/scripts:ro
     command: ["run", "/scripts/election_load.js"]
