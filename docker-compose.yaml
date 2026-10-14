@@ -111,7 +111,7 @@ services:
       OTEL_SERVICE_NAME: "election-actors"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
-      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=2 -XX:MaxRAMPercentage=75.0"
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
     ports:
       - "8081:8081"
     healthcheck:
@@ -131,7 +131,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.00"
+          cpus: "1.00"
           memory: 1536M
 
   election-api:
