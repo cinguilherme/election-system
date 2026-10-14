@@ -97,8 +97,8 @@ reset-data:
 	@docker compose exec -T nats nats stream purge -f proxy_votes >/dev/null 2>&1 || true
 	@docker compose exec -T nats nats stream purge -f proxy_actor_precinct >/dev/null 2>&1 || true
 	@docker compose exec -T nats nats stream purge -f proxy_actor_election >/dev/null 2>&1 || true
-	@echo "Restarting actors and api to reset in-memory state..."
-	@docker compose restart election-actors election-api
+	@echo "Restarting actors and api nodes to reset in-memory state..."
+	@docker compose restart election-actors election-api-1 election-api-2
 	@echo "Data reset complete."
 
 clean:
