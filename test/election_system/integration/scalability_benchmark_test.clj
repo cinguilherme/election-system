@@ -4,7 +4,9 @@
             [clojure.test :refer [deftest is testing]]
             [d-core.actor-system.core :as actor]
             [d-core.actor-system.protocols :as p]
+            [d-core.actor-system.transport.async-proxy :as ap-transport]
             [d-core.libs.time :as time]
+            [election-system.db.writer :as writer]
             [election-system.system :as sys]))
 
 (defn- post-json [handler uri body]
@@ -163,3 +165,93 @@
                 (is (.contains ^String body "sql_batch_rows_total"))))
             (finally
               (sys/stop-multi-tier-test-cluster! cluster))))))))
+
+(deftest multi-node-actor-sharding-integration-test
+  (testing "Multi-node Actor Partition Sharding: Node 1 handles partitions [0 1], Node 2 handles partitions [2 3] out of 4 total"
+    (let [election-id "sharded-election-2026"
+          open-inst (time/instant "2026-11-03T08:00:00Z")
+          close-inst (time/instant "2026-11-03T20:00:00Z")
+          clk (time/manual-clock open-inst)]
+      (time/with-clock clk
+        (let [cluster-node-1 (sys/start-multi-tier-test-cluster
+                              {:election-id election-id
+                               :assigned-partitions [0 1]
+                               :total-partitions 4
+                               :batch-size 10
+                               :flush-every-n 2
+                               :opens-at open-inst
+                               :closes-at close-inst})
+              in-proc-name (:in-process-name cluster-node-1)
+              shared-db (:db cluster-node-1)
+              prom-metrics (:prom-metrics cluster-node-1)
+              snapshot-store (:snapshot-store cluster-node-1)
+              metrics-atom (:metrics-atom cluster-node-1)
+              entities (sys/make-entity-specs {:election-id election-id
+                                               :opens-at open-inst
+                                               :closes-at close-inst
+                                               :batch-size 10
+                                               :flush-every-n 2})
+              node-2-workers (mapv (fn [idx]
+                                     (let [t (ap-transport/create-async-proxy-transport
+                                              {:transport :in-process
+                                               :in-process-name in-proc-name
+                                               :partition idx
+                                               :partitions 4
+                                               :poll-ms 5})
+                                           rt (actor/start-runtime
+                                               {:transport t
+                                                :storage snapshot-store
+                                                :entities entities
+                                                :db shared-db
+                                                :metrics prom-metrics
+                                                :effect-handler (writer/make-effect-handler shared-db metrics-atom nil prom-metrics)
+                                                :options {:partition idx
+                                                          :partitions 4
+                                                          :poll-ms 5
+                                                          :watchdog-interval-ms 60000}})]
+                                       {:partition idx :transport t :runtime rt}))
+                                   [2 3])
+              actor-client (:actor-client cluster-node-1)
+              handler (:api-handler cluster-node-1)]
+          (try
+            (doseq [p-idx (range 8)]
+              (let [precinct-id (str "p-" p-idx)
+                    resp (post-json handler (str "/v1/elections/" election-id "/votes")
+                                    {:precinct_id precinct-id
+                                     :voter_id (str "v-" p-idx)
+                                     :candidate_id "alice"})]
+                (is (= 200 (:status resp)))))
+            (doseq [p-idx (range 8)]
+              (let [precinct-id (str "p-" p-idx)
+                    flush-resp (post-json handler (str "/v1/elections/" election-id "/precincts/" precinct-id "/flush") {})]
+                (is (= 200 (:status flush-resp)))))
+            ;; Wait for async child->parent :tell messages to arrive at :election-tally
+            (loop [attempts 0]
+              (let [t (actor/ask-sync! actor-client :election-tally election-id {:type :get-tally})]
+                (when (and (< (long (or (:total-votes t) 0)) 8) (< attempts 40))
+                  (Thread/sleep 25)
+                  (recur (inc attempts)))))
+            (actor/ask-sync! actor-client :election-tally election-id {:type :flush})
+            (let [tally-resp (get-json handler (str "/v1/elections/" election-id "/tally"))]
+              (is (= 200 (:status tally-resp)))
+              (is (= 8 (get-in tally-resp [:data :total-votes])))
+              (is (= 8 (get-in tally-resp [:data :tallies :alice]))))
+            ;; Verify that both node 1 and node 2 processed disjoint subsets of precincts
+            (let [node-1-precincts (set (mapcat (fn [{:keys [runtime]}]
+                                                  (keep (fn [[[etype eid] _]] (when (= :precinct etype) eid))
+                                                        (p/active-actors (:engine runtime) {})))
+                                                (:workers cluster-node-1)))
+                  node-2-precincts (set (mapcat (fn [{:keys [runtime]}]
+                                                  (keep (fn [[[etype eid] _]] (when (= :precinct etype) eid))
+                                                        (p/active-actors (:engine runtime) {})))
+                                                node-2-workers))]
+              (is (pos? (count node-1-precincts)))
+              (is (pos? (count node-2-precincts)))
+              (is (empty? (set/intersection node-1-precincts node-2-precincts)))
+              (is (= 8 (count (set/union node-1-precincts node-2-precincts)))))
+            (finally
+              (doseq [{:keys [runtime transport]} node-2-workers]
+                (actor/stop-runtime! runtime)
+                (ap-transport/close-async-proxy-transport! transport))
+              (sys/stop-multi-tier-test-cluster! cluster-node-1))))))))
+

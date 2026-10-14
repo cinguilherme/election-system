@@ -54,7 +54,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.75"
+          cpus: "0.60"
           memory: 1024M
 
   async-proxy-egress:
@@ -86,10 +86,10 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.75"
+          cpus: "0.60"
           memory: 1024M
 
-  election-actors:
+  election-actors-1:
     build:
       context: ..
       dockerfile: election-system/Dockerfile
@@ -98,7 +98,9 @@ services:
       METRICS_PORT: "8081"
       ASYNC_PROXY_HOST: "async-proxy-egress"
       ASYNC_PROXY_GRPC_PORT: "50052"
-      WORKER_COUNT: "8"
+      ASSIGNED_PARTITIONS: "0,1,2,3"
+      TOTAL_PARTITIONS: "8"
+      WORKER_COUNT: "4"
       BATCH_SIZE: "50"
       FLUSH_EVERY_N: "25"
       TICK_INTERVAL_MS: "2000"
@@ -107,11 +109,11 @@ services:
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
       DB_USER: "election"
       DB_PASSWORD: "election"
-      DB_POOL_SIZE: "8"
+      DB_POOL_SIZE: "4"
       OTEL_SERVICE_NAME: "election-actors"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
-      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=2 -XX:MaxRAMPercentage=75.0"
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
     ports:
       - "8081:8081"
     healthcheck:
@@ -131,8 +133,55 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.50"
-          memory: 2048M
+          cpus: "0.90"
+          memory: 1536M
+
+  election-actors-2:
+    build:
+      context: ..
+      dockerfile: election-system/Dockerfile
+    environment:
+      ROLE: "actors"
+      METRICS_PORT: "8082"
+      ASYNC_PROXY_HOST: "async-proxy-egress"
+      ASYNC_PROXY_GRPC_PORT: "50052"
+      ASSIGNED_PARTITIONS: "4,5,6,7"
+      TOTAL_PARTITIONS: "8"
+      WORKER_COUNT: "4"
+      BATCH_SIZE: "50"
+      FLUSH_EVERY_N: "25"
+      TICK_INTERVAL_MS: "2000"
+      ELECTION_ID: "national-2026"
+      DB_ENGINE: "postgres"
+      JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
+      DB_USER: "election"
+      DB_PASSWORD: "election"
+      DB_POOL_SIZE: "4"
+      OTEL_SERVICE_NAME: "election-actors"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
+      OTEL_SAMPLING_RATIO: "0.10"
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8082"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      postgres:
+        condition: service_healthy
+      async-proxy-egress:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    cap_add:
+      - SYS_PTRACE
+    deploy:
+      resources:
+        limits:
+          cpus: "0.90"
+          memory: 1536M
 
   election-api-1:
     build:
@@ -144,11 +193,12 @@ services:
       ASYNC_PROXY_HOST: "async-proxy-ingress"
       ASYNC_PROXY_GRPC_PORT: "50051"
       WORKER_COUNT: "8"
+      TOTAL_PARTITIONS: "8"
       DB_ENGINE: "postgres"
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
       DB_USER: "election"
       DB_PASSWORD: "election"
-      DB_POOL_SIZE: "10"
+      DB_POOL_SIZE: "8"
       JETTY_MAX_THREADS: "120"
       OTEL_SERVICE_NAME: "election-api-1"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
@@ -164,7 +214,9 @@ services:
         condition: service_healthy
       async-proxy-ingress:
         condition: service_healthy
-      election-actors:
+      election-actors-1:
+        condition: service_healthy
+      election-actors-2:
         condition: service_healthy
       jaeger:
         condition: service_started
@@ -173,7 +225,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.00"
+          cpus: "0.90"
           memory: 1536M
 
   election-api-2:
@@ -186,11 +238,12 @@ services:
       ASYNC_PROXY_HOST: "async-proxy-ingress"
       ASYNC_PROXY_GRPC_PORT: "50051"
       WORKER_COUNT: "8"
+      TOTAL_PARTITIONS: "8"
       DB_ENGINE: "postgres"
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
       DB_USER: "election"
       DB_PASSWORD: "election"
-      DB_POOL_SIZE: "10"
+      DB_POOL_SIZE: "8"
       JETTY_MAX_THREADS: "120"
       OTEL_SERVICE_NAME: "election-api-2"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
@@ -206,7 +259,9 @@ services:
         condition: service_healthy
       async-proxy-ingress:
         condition: service_healthy
-      election-actors:
+      election-actors-1:
+        condition: service_healthy
+      election-actors-2:
         condition: service_healthy
       jaeger:
         condition: service_started
@@ -215,7 +270,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.00"
+          cpus: "0.90"
           memory: 1536M
 
   election-api:
@@ -237,7 +292,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.50"
+          cpus: "0.25"
           memory: 128M
 
   jaeger:
@@ -252,8 +307,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.50"
-          memory: 1024M
+          cpus: "0.40"
+          memory: 512M
 
   prometheus:
     image: prom/prometheus:v2.53.0
@@ -264,7 +319,9 @@ services:
     depends_on:
       election-api:
         condition: service_healthy
-      election-actors:
+      election-actors-1:
+        condition: service_healthy
+      election-actors-2:
         condition: service_healthy
       async-proxy-ingress:
         condition: service_healthy

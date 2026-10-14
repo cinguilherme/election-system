@@ -20,6 +20,12 @@
         default-val))
     default-val))
 
+(defn parse-partition-list
+  "Parses a comma-delimited partition list string (e.g. '0,1,2,3') into a vector of longs."
+  [s]
+  (when (and s (not (str/blank? s)))
+    (mapv #(Long/parseLong (str/trim %)) (str/split (str/trim s) #","))))
+
 (defn build-config-from-env
   []
   (let [role (-> (env-str "ROLE" "api") str/lower-case keyword)
@@ -27,13 +33,18 @@
         jdbc-url (env-str "JDBC_URL" nil)
         db-user (env-str "DB_USER" "postgres")
         db-password (env-str "DB_PASSWORD" "postgres")
-        pool-size (env-long "DB_POOL_SIZE" 4)]
+        pool-size (env-long "DB_POOL_SIZE" 4)
+        assigned-parts (parse-partition-list (env-str "ASSIGNED_PARTITIONS" nil))
+        worker-cnt (env-long "WORKER_COUNT" (if (seq assigned-parts) (count assigned-parts) 4))
+        total-parts (env-long "TOTAL_PARTITIONS" (or (when (seq assigned-parts) (max worker-cnt (count assigned-parts))) 8))]
     {:role role
      :http-port (env-long "HTTP_PORT" 8080)
      :metrics-port (env-long "METRICS_PORT" 8081)
      :proxy-host (env-str "ASYNC_PROXY_HOST" "localhost")
      :proxy-grpc-port (env-long "ASYNC_PROXY_GRPC_PORT" 50051)
-     :worker-count (env-long "WORKER_COUNT" 4)
+     :worker-count worker-cnt
+     :assigned-partitions assigned-parts
+     :total-partitions total-parts
      :batch-size (env-long "BATCH_SIZE" 50)
      :flush-every-n (env-long "FLUSH_EVERY_N" 5)
      :tick-interval-ms (env-long "TICK_INTERVAL_MS" 2000)
@@ -53,7 +64,10 @@
     (println (str "[election-system] Starting node with role=" (name role)
                   " proxy=" (:proxy-host cfg) ":" (:proxy-grpc-port cfg)
                   " db-engine=" (name (get-in cfg [:db-opts :engine]))
-                  " pool-size=" (get-in cfg [:db-opts :pool-size])))
+                  " pool-size=" (get-in cfg [:db-opts :pool-size])
+                  (when (:assigned-partitions cfg)
+                    (str " assigned-partitions=" (pr-str (:assigned-partitions cfg))))
+                  " total-partitions=" (:total-partitions cfg)))
     (let [node (case role
                  :actors (system/start-actors-node cfg)
                  :api (system/start-api-node cfg)

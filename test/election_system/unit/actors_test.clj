@@ -2,7 +2,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [d-core.libs.time :as time]
             [election-system.actors.precinct :as precinct]
-            [election-system.actors.tally :as tally]))
+            [election-system.actors.tally :as tally]
+            [election-system.main :as main]))
 
 (deftest precinct-pure-behavior-and-time-window-test
   (testing "Pure precinct step enforces election window, prevents duplicate votes, and batches flushes"
@@ -128,4 +129,14 @@
                         :precinct-total 1
                         :flushes 1}}
              (second eff1))))))
+
+(deftest partition-list-parsing-test
+  (testing "parse-partition-list parses comma-delimited strings and handles edge cases"
+    (is (= [0 1 2 3] (main/parse-partition-list "0,1,2,3")))
+    (is (= [4 5 6 7] (main/parse-partition-list " 4 , 5 , 6 , 7 ")))
+    (is (= [0] (main/parse-partition-list "0")))
+    (is (nil? (main/parse-partition-list nil)))
+    (is (nil? (main/parse-partition-list "")))
+    (is (nil? (main/parse-partition-list "   ")))))
+
 

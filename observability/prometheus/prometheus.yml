@@ -18,7 +18,7 @@ scrape_configs:
   - job_name: 'election-actors'
     metrics_path: '/metrics'
     static_configs:
-      - targets: ['election-actors:8081']
+      - targets: ['election-actors-1:8081', 'election-actors-2:8082']
         labels:
           tier: 'actors'
     relabel_configs:

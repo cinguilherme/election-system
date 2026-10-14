@@ -122,14 +122,14 @@
 (defn start-api-node
   "Starts a dedicated Election API container node connected to `d-core-async-proxy` over gRPC
    and backed by SQL for `/audit` queries and Prometheus `/metrics`."
-  [{:keys [http-port proxy-host proxy-grpc-port worker-count db-opts timeout-ms max-threads]
+  [{:keys [http-port proxy-host proxy-grpc-port worker-count total-partitions db-opts timeout-ms max-threads]
     :or {http-port 8080
          proxy-host "localhost"
          proxy-grpc-port 50051
-         worker-count 4
          timeout-ms 10000
          max-threads 120}}]
-  (let [{:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
+  (let [tot-partitions (long (or total-partitions worker-count 4))
+        {:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
         {:keys [prom-registry prom-metrics]} (init-prometheus true)
         tracer-ctx (otel/init-tracer {:service-name (or (System/getenv "OTEL_SERVICE_NAME") "election-api")})
         metrics-atom (writer/make-write-metrics)
@@ -137,8 +137,8 @@
                            {:transport :netty
                             :host proxy-host
                             :port proxy-grpc-port
-                            :partitions worker-count})
-        actor-client (actor-core/create-client ingress-transport {:partitions worker-count
+                            :partitions tot-partitions})
+        actor-client (actor-core/create-client ingress-transport {:partitions tot-partitions
                                                                   :timeout-ms timeout-ms})
         handler (routes/make-handler {:actor-client actor-client
                                       :db db
@@ -187,20 +187,23 @@
                     ",\"sql_statements\":" (get @metrics-atom :total-sql-statements 0) "}")}))))
 
 (defn start-actors-node
-  "Starts a dedicated Election Actors container node hosting `worker-count` sharded actor
+  "Starts a dedicated Election Actors container node hosting sharded actor
    partitions connected to `d-core-async-proxy` over gRPC, writing batches to SQL, and
    exposing `/metrics` on `metrics-port`."
   [{:keys [metrics-port proxy-host proxy-grpc-port worker-count batch-size flush-every-n
-           tick-interval-ms election-id opens-at closes-at db-opts]
+           tick-interval-ms election-id opens-at closes-at db-opts
+           assigned-partitions total-partitions]
     :or {metrics-port 8081
          proxy-host "localhost"
          proxy-grpc-port 50051
-         worker-count 4
          batch-size 50
          flush-every-n 5
          tick-interval-ms 2000
          election-id "national-2026"}}]
-  (let [{:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
+  (let [assigned (vec (or assigned-partitions (range (or worker-count 4))))
+        tot-partitions (long (or total-partitions (max (count assigned) (or worker-count 4))))
+        actual-workers-count (count assigned)
+        {:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
         {:keys [prom-registry prom-metrics]} (init-prometheus true)
         tracer-ctx (otel/init-tracer {:service-name (or (System/getenv "OTEL_SERVICE_NAME") "election-actors")})
         metrics-atom (writer/make-write-metrics)
@@ -218,7 +221,7 @@
                                   :host proxy-host
                                   :port proxy-grpc-port
                                   :partition idx
-                                  :partitions worker-count
+                                  :partitions tot-partitions
                                   :poll-ms 10})
                               rt (actor-core/start-runtime
                                   {:transport t
@@ -228,14 +231,14 @@
                                    :metrics prom-metrics
                                    :effect-handler effect-handler
                                    :options {:partition idx
-                                             :partitions worker-count
+                                             :partitions tot-partitions
                                              :poll-ms 10
                                              :watchdog-interval-ms (min 500 (long (or tick-interval-ms 2000)))}})]
                           {:partition idx
                            :transport t
                            :runtime rt}))
-                      (range worker-count))
-        metrics-handler (make-actors-metrics-handler prom-registry metrics-atom worker-count)
+                      assigned)
+        metrics-handler (make-actors-metrics-handler prom-registry metrics-atom actual-workers-count)
         jetty-server (jetty/run-jetty metrics-handler {:port (int metrics-port) :join? false})]
     {:role :actors
      :db db
@@ -246,6 +249,8 @@
      :tracer-ctx tracer-ctx
      :metrics-atom metrics-atom
      :snapshot-store snapshot-store
+     :assigned-partitions assigned
+     :total-partitions tot-partitions
      :workers workers
      :jetty-server jetty-server}))
 
@@ -269,12 +274,14 @@
    2. `d-core-async-proxy` gRPC server (hosting message queues, subscription registry, and sharding router)
    3. `N` dedicated sharded Actor Worker runtimes (`0 .. worker-count-1`), each connected to `async-proxy` over gRPC
    4. API Ingress node (with its own `ActorClient` connected to `async-proxy` over gRPC and Ring handler)"
-  [{:keys [db engine worker-count batch-size flush-every-n opens-at closes-at election-id]
+  [{:keys [db engine worker-count assigned-partitions total-partitions batch-size flush-every-n opens-at closes-at election-id]
     :or {worker-count 2
          batch-size 50
          flush-every-n 5
          election-id "national-2026"}}]
-  (let [tmp-file (when-not db (java.io.File/createTempFile "election-system-" ".db"))
+  (let [assigned (vec (or assigned-partitions (range (or worker-count 2))))
+        tot-partitions (long (or total-partitions (max (count assigned) (or worker-count 2))))
+        tmp-file (when-not db (java.io.File/createTempFile "election-system-" ".db"))
         sqlite-c (when tmp-file
                    (sqlite-client/make-client {:jdbc-url (str "jdbc:sqlite:" (.getAbsolutePath tmp-file))}))
         actual-db (or db
@@ -310,7 +317,7 @@
                                  {:transport :in-process
                                   :in-process-name in-proc-name
                                   :partition idx
-                                  :partitions worker-count
+                                  :partitions tot-partitions
                                   :poll-ms 5})
                               rt (actor-core/start-runtime
                                   {:transport t
@@ -320,18 +327,18 @@
                                    :metrics prom-metrics
                                    :effect-handler effect-handler
                                    :options {:partition idx
-                                             :partitions worker-count
+                                             :partitions tot-partitions
                                              :poll-ms 5
                                              :watchdog-interval-ms 60000}})]
                           {:partition idx
                            :transport t
                            :runtime rt}))
-                      (range worker-count))
+                      assigned)
         ingress-transport (ap-transport/create-async-proxy-transport
                            {:transport :in-process
                             :in-process-name in-proc-name
-                            :partitions worker-count})
-        actor-client (actor-core/create-client ingress-transport {:partitions worker-count
+                            :partitions tot-partitions})
+        actor-client (actor-core/create-client ingress-transport {:partitions tot-partitions
                                                                   :timeout-ms 5000})
         api-handler (routes/make-handler {:actor-client actor-client
                                           :db actual-db
@@ -339,18 +346,19 @@
                                           :prom-metrics prom-metrics
                                           :prom-registry prom-registry
                                           :timeout-ms 5000})]
-    {:db actual-db
-     :tmp-file tmp-file
-     :metrics-atom metrics-atom
-     :prom-registry prom-registry
-     :prom-metrics prom-metrics
-     :snapshot-store snapshot-store
-     :proxy-server proxy-server
-     :proxy-registry proxy-registry
-     :workers workers
-     :ingress-transport ingress-transport
-     :actor-client actor-client
-     :api-handler api-handler}))
+     {:db actual-db
+      :tmp-file tmp-file
+      :in-process-name in-proc-name
+      :metrics-atom metrics-atom
+      :prom-registry prom-registry
+      :prom-metrics prom-metrics
+      :snapshot-store snapshot-store
+      :proxy-server proxy-server
+      :proxy-registry proxy-registry
+      :workers workers
+      :ingress-transport ingress-transport
+      :actor-client actor-client
+      :api-handler api-handler}))
 
 (defn stop-multi-tier-test-cluster!
   [{:keys [workers ingress-transport proxy-server proxy-registry tmp-file]}]
