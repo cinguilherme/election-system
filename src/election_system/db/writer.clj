@@ -227,3 +227,26 @@
            :flushes (long (or (row-val row :flushes) 0))
            :updated-at (some-> (row-val row :updated_at) str)}))
       (catch Exception _ nil))))
+
+(defn query-precinct-tally-summary
+  "Reads the aggregated precinct tally summary row from `db` for `election-id` and `precinct-id`."
+  [db election-id precinct-id]
+  (when db
+    (try
+      (let [eid (str election-id)
+            pid (str precinct-id)
+            precinct-rows (sql/select db (merge {:table :precinct_tallies
+                                                 :where {:election_id eid
+                                                         :precinct_id pid}}
+                                                (instant-temporal-opts db :updated_at)))
+            row (first precinct-rows)]
+        (when row
+          {:election-id eid
+           :precinct-id pid
+           :tallies (if-let [tj (row-val row :tallies_json)]
+                      (json/parse-string (str tj) true)
+                      {})
+           :total-votes (long (or (row-val row :total_votes) 0))
+           :flushes (long (or (row-val row :flushes) 0))
+           :updated-at (some-> (row-val row :updated_at) str)}))
+      (catch Exception _ nil))))

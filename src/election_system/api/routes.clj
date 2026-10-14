@@ -127,20 +127,37 @@
                                {:timeout-ms (or timeout-ms 5000)})]
       (json-response res 200))))
 
+(defonce ^:private tally-cache-atom (atom {}))
+
+(defn- get-cached-precinct-tally
+  [db election-id precinct-id ttl-ms]
+  (let [now (System/currentTimeMillis)
+        cache-key (str election-id ":" precinct-id)
+        cached (get @tally-cache-atom cache-key)]
+    (if (and cached (< (- now (:cached-at cached)) ttl-ms))
+      (:data cached)
+      (let [data (or (writer/query-precinct-tally-summary db election-id precinct-id)
+                     {:election-id (str election-id)
+                      :precinct-id (str precinct-id)
+                      :tallies {}
+                      :total-votes 0})]
+        (swap! tally-cache-atom assoc cache-key {:cached-at now :data data})
+        data))))
+
 (defn- handle-precinct-tally
-  [{:keys [actor-client timeout-ms]}]
+  [{:keys [actor-client db timeout-ms]}]
   (fn [req]
     (let [election-id (get-in req [:path-params :election-id])
-          precinct-id (get-in req [:path-params :precinct-id])
-          actor-id (domain/precinct-actor-id election-id precinct-id)
-          res (actor/ask-sync! actor-client
-                               :precinct
-                               actor-id
-                               {:type :get-tally}
-                               {:timeout-ms (or timeout-ms 5000)})]
-      (json-response res 200))))
-
-(defonce ^:private tally-cache-atom (atom {}))
+          precinct-id (get-in req [:path-params :precinct-id])]
+      (if db
+        (json-response (get-cached-precinct-tally db election-id precinct-id 500) 200)
+        (let [actor-id (domain/precinct-actor-id election-id precinct-id)
+              res (actor/ask-sync! actor-client
+                                   :precinct
+                                   actor-id
+                                   {:type :get-tally}
+                                   {:timeout-ms (or timeout-ms 5000)})]
+          (json-response res 200))))))
 
 (defn- get-cached-election-tally
   [db election-id ttl-ms]

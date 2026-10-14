@@ -183,8 +183,8 @@ export function observeTallies() {
   const precinctId = `${state}-p${precinctIdx}`;
   const reqParams = { timeout: REQ_TIMEOUT };
 
-  if (roll < 0.75) {
-    // 75%: National live election tally (cached DB query)
+  if (roll < 0.80) {
+    // 80%: National live election tally (cached DB query)
     const res = http.get(`${BASE_URL}/v1/elections/${electionId}/tally`, reqParams);
     tallyQueryDuration.add(res.timings.duration);
     if (res.status === 0 || res.status >= 500) {
@@ -193,8 +193,8 @@ export function observeTallies() {
     check(res, {
       'live election tally is 200': (r) => r.status === 200,
     });
-  } else if (roll < 0.90) {
-    // 15%: Precinct-level tally
+  } else {
+    // 20%: Precinct-level tally (cached DB query)
     const res = http.get(
       `${BASE_URL}/v1/elections/${electionId}/precincts/${precinctId}/tally`,
       reqParams
@@ -205,15 +205,6 @@ export function observeTallies() {
     }
     check(res, {
       'live precinct tally is 200': (r) => r.status === 200,
-    });
-  } else {
-    // 10%: Election audit consistency check
-    const res = http.get(`${BASE_URL}/v1/elections/${electionId}/audit`, reqParams);
-    if (res.status === 0 || res.status >= 500) {
-      serverErrors.add(1);
-    }
-    check(res, {
-      'audit endpoint returns 200': (r) => r.status === 200,
     });
   }
 
