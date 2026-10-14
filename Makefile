@@ -1,4 +1,15 @@
-.PHONY: tests unit integration benchmark lint clean up down logs load-test stress-test profile profile-cpu profile-mem threaddump reset-data
+.PHONY: tests unit integration benchmark lint clean up down logs load-test stress-test profile profile-cpu profile-mem threaddump reset-data build-base ensure-base
+
+# Prebuild shared base image containing diagnostic utilities and async-profiler
+build-base:
+	@echo "Building shared base image d-core-base:latest..."
+	docker build -t d-core-base:latest -f Dockerfile.base .
+
+ensure-base:
+	@if [ -z "$$(docker images -q d-core-base:latest 2>/dev/null)" ]; then \
+		echo "Base image d-core-base:latest not found. Building it now..."; \
+		$(MAKE) build-base; \
+	fi
 
 tests:
 	clojure -M:test
@@ -18,7 +29,7 @@ lint:
 up:
 	docker compose up -d
 
-up-build:
+up-build: ensure-base
 	docker compose up --build -d
 
 down:
