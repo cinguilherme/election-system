@@ -78,14 +78,16 @@ threaddump:
 	docker exec $$CID jcmd 1 Thread.print > $$OUT_FILE && \
 	echo "Thread dump saved to: $$OUT_FILE"
 
-# Fast benchmark data reset without restarting containers
+# Fast benchmark data reset
 reset-data:
 	@echo "Resetting PostgreSQL tables..."
-	@docker compose exec -T postgres psql -U election -d election_db -c "TRUNCATE TABLE ballots, precinct_tallies, election_tallies;"
+	@docker compose exec -T postgres psql -U election -d election_db -c "TRUNCATE TABLE ballots, precinct_tallies, election_tallies, actor_snapshots;"
 	@echo "Purging NATS JetStream messages..."
 	@docker compose exec -T nats nats stream purge -f proxy_votes >/dev/null 2>&1 || true
 	@docker compose exec -T nats nats stream purge -f proxy_actor_precinct >/dev/null 2>&1 || true
 	@docker compose exec -T nats nats stream purge -f proxy_actor_election >/dev/null 2>&1 || true
+	@echo "Restarting actors and api to reset in-memory state..."
+	@docker compose restart election-actors election-api
 	@echo "Data reset complete."
 
 clean:

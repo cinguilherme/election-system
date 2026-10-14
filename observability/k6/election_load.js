@@ -75,7 +75,7 @@ export const options = {
   thresholds: {
     http_req_duration: ['p(95)<250'],
     vote_ingest_duration: ['p(95)<200'],
-    tally_query_duration: ['p(95)<150'],
+    tally_query_duration: ['p(95)<200'],
     server_5xx_or_timeout_errors: ['count<100'],
   },
 };

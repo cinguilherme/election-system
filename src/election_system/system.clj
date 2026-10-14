@@ -122,12 +122,13 @@
 (defn start-api-node
   "Starts a dedicated Election API container node connected to `d-core-async-proxy` over gRPC
    and backed by SQL for `/audit` queries and Prometheus `/metrics`."
-  [{:keys [http-port proxy-host proxy-grpc-port worker-count db-opts timeout-ms]
+  [{:keys [http-port proxy-host proxy-grpc-port worker-count db-opts timeout-ms max-threads]
     :or {http-port 8080
          proxy-host "localhost"
          proxy-grpc-port 50051
          worker-count 4
-         timeout-ms 10000}}]
+         timeout-ms 10000
+         max-threads 120}}]
   (let [{:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
         {:keys [prom-registry prom-metrics]} (init-prometheus true)
         tracer-ctx (otel/init-tracer {:service-name (or (System/getenv "OTEL_SERVICE_NAME") "election-api")})
@@ -145,7 +146,10 @@
                                       :prom-metrics prom-metrics
                                       :prom-registry prom-registry
                                       :timeout-ms timeout-ms})
-        jetty-server (jetty/run-jetty handler {:port (int http-port) :join? false})]
+        jetty-server (jetty/run-jetty handler {:port (int http-port)
+                                               :max-threads (int (or max-threads 120))
+                                               :min-threads 16
+                                               :join? false})]
     {:role :api
      :db db
      :pg-client pg-client

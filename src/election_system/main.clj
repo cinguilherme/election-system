@@ -39,6 +39,7 @@
      :tick-interval-ms (env-long "TICK_INTERVAL_MS" 2000)
      :election-id (env-str "ELECTION_ID" "national-2026")
      :timeout-ms (env-long "TIMEOUT_MS" 10000)
+     :max-threads (env-long "JETTY_MAX_THREADS" 120)
      :db-opts {:engine engine
                :jdbc-url jdbc-url
                :username db-user
