@@ -1,4 +1,4 @@
-.PHONY: tests unit integration benchmark lint clean up down logs load-test stress-test profile profile-cpu profile-mem threaddump reset-data build-base ensure-base
+.PHONY: tests unit integration benchmark lint clean up down logs load-test stress-test stress-test-single profile profile-cpu profile-mem threaddump reset-data build-base ensure-base
 
 # Prebuild shared base image containing diagnostic utilities and async-profiler
 build-base:
@@ -42,8 +42,20 @@ logs:
 load-test:
 	docker compose run --rm k6
 
-# Extreme breaking-point test (100 -> 300 -> 600 -> 1000 VUs with zero think-time)
+# Extreme breaking-point test with distributed multi-instance load generation
+# 1000 total VUs split across k6-1 (segment 0:1/2) and k6-2 (segment 1/2:1) with zero think-time
 stress-test:
+	@docker compose rm -f k6-1 k6-2 2>/dev/null || true
+	STAGE_1_VUS=100 STAGE_1_DURATION=20s \
+	STAGE_2_VUS=300 STAGE_2_DURATION=45s \
+	STAGE_3_VUS=600 STAGE_3_DURATION=60s \
+	STAGE_4_VUS=1000 STAGE_4_DURATION=60s \
+	STAGE_5_DURATION=20s \
+	SLEEP_S=0 \
+	docker compose up --force-recreate k6-1 k6-2
+
+# Single-instance stress-test for baseline comparison
+stress-test-single:
 	docker compose run --rm \
 		-e STAGE_1_VUS=100 -e STAGE_1_DURATION=20s \
 		-e STAGE_2_VUS=300 -e STAGE_2_DURATION=45s \
@@ -97,8 +109,10 @@ reset-data:
 	@docker compose exec -T nats nats stream purge -f proxy_votes >/dev/null 2>&1 || true
 	@docker compose exec -T nats nats stream purge -f proxy_actor_precinct >/dev/null 2>&1 || true
 	@docker compose exec -T nats nats stream purge -f proxy_actor_election >/dev/null 2>&1 || true
-	@echo "Restarting actors, api nodes, and reverse proxy to reset state..."
-	@docker compose restart election-actors-1 election-actors-2 election-api-1 election-api-2 election-api
+	@echo "Restarting actors and API nodes to reset state..."
+	@docker compose restart election-actors-1 election-actors-2 election-api-1 election-api-2
+	@echo "Restarting reverse proxy..."
+	@docker compose restart election-api
 	@echo "Data reset complete."
 
 clean:

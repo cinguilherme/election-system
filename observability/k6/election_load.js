@@ -117,17 +117,13 @@ export function castVotes() {
   const reqParams = {
     headers: { 'Content-Type': 'application/json' },
     timeout: REQ_TIMEOUT,
+    responseType: 'none',
   };
 
   if (roll < 0.90) {
     // 90%: Unique valid ballot submission
     const voterId = `voter-${state}-vu${__VU}-it${__ITER}-${Date.now()}`;
-    const payload = JSON.stringify({
-      precinct_id: precinctId,
-      voter_id: voterId,
-      candidate_id: candidateId,
-      async: true,
-    });
+    const payload = `{"precinct_id":"${precinctId}","voter_id":"${voterId}","candidate_id":"${candidateId}","async":true}`;
     const res = http.post(
       `${BASE_URL}/v1/elections/${electionId}/votes`,
       payload,
@@ -145,12 +141,7 @@ export function castVotes() {
   } else {
     // 10%: Deterministic duplicate voter ID -> tests fast in-memory dedup
     const dupVoterId = `dup-voter-${electionId}-${precinctId}`;
-    const payload = JSON.stringify({
-      precinct_id: precinctId,
-      voter_id: dupVoterId,
-      candidate_id: candidateId,
-      async: true,
-    });
+    const payload = `{"precinct_id":"${precinctId}","voter_id":"${dupVoterId}","candidate_id":"${candidateId}","async":true}`;
     const res = http.post(
       `${BASE_URL}/v1/elections/${electionId}/votes`,
       payload,
@@ -181,7 +172,10 @@ export function observeTallies() {
   const electionId = selectElectionContext(state, __ITER);
   const precinctIdx = Math.floor(Math.random() * PRECINCTS_PER_STATE);
   const precinctId = `${state}-p${precinctIdx}`;
-  const reqParams = { timeout: REQ_TIMEOUT };
+  const reqParams = {
+    timeout: REQ_TIMEOUT,
+    responseType: 'none',
+  };
 
   if (roll < 0.80) {
     // 80%: National live election tally (cached DB query)
@@ -228,7 +222,10 @@ export function teardown() {
   let auditRes = null;
   for (let i = 0; i < 15; i++) {
     sleep(2);
-    auditRes = http.get(`${BASE_URL}/v1/elections/${sampleElections[0]}/audit`, { timeout: '10s' });
+    auditRes = http.get(`${BASE_URL}/v1/elections/${sampleElections[0]}/audit`, {
+      timeout: '10s',
+      responseType: 'text',
+    });
     if (auditRes && auditRes.status === 200) {
       try {
         const body = JSON.parse(auditRes.body);
@@ -244,7 +241,10 @@ export function teardown() {
     'audit endpoint returns 200': (r) => r && r.status === 200,
   });
   for (const eid of sampleElections) {
-    const res = http.get(`${BASE_URL}/v1/elections/${eid}/audit`, { timeout: '10s' });
+    const res = http.get(`${BASE_URL}/v1/elections/${eid}/audit`, {
+      timeout: '10s',
+      responseType: 'text',
+    });
     if (res && res.status === 200) {
       console.log(`[k6 Multi-Election Audit: ${eid}] ${res.body}`);
     }
