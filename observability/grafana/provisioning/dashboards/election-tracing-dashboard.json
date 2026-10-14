@@ -1,0 +1,760 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Business & Scalability Dashboard",
+      "tooltip": "Switch to Election System Scalability Dashboard",
+      "type": "link",
+      "url": "/d/election-system-scalability"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Jaeger UI (Tracing)",
+      "tooltip": "Open native Jaeger UI",
+      "type": "link",
+      "url": "http://localhost:16686"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Distributed Tracing Pipeline & Observability Links",
+      "type": "text",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### \ud83e\udded Distributed Tracing Pipeline\n\n`election-api` *(HTTP Route)* &rarr; `async-proxy-ingress` *(gRPC Publish)* &rarr; `JetStream` *(Broker Queue)* &rarr; `async-proxy-egress` *(Dispatcher Stream)* &rarr; `election-actors` *(Mailbox & Step Execute)* &rarr; `PostgreSQL` *(Batch Flush)*\n\n**Quick Access Links**: [\ud83d\udd0d Open Jaeger UI (localhost:16686)](http://localhost:16686) | [\ud83d\udcca Business & Scalability Dashboard](/d/election-system-scalability) | [\ud83d\udd0e Grafana Jaeger Explore](/explore?left=%5B%22now-1h%22,%22now%22,%22jaeger%22,%7B%22queryType%22:%22search%22,%22service%22:%22election-actors%22%7D%5D)"
+      }
+    },
+    {
+      "id": 2,
+      "title": "End-to-End Transit Lag (p95)",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(actor_envelope_transit_lag_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "p95 Lag",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 250
+              },
+              {
+                "color": "red",
+                "value": 800
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "title": "End-to-End Transit Lag (p50)",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 4
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(actor_envelope_transit_lag_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "p50 Lag",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 200
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Egress Stream Delivery (p95)",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 4
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(async_proxy_delivery_duration_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "p95 Delivery",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 10
+              },
+              {
+                "color": "red",
+                "value": 50
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Actor Step Execution (p95)",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 4
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(actor_step_duration_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "p95 Step",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Egress Queue Backlog",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 4
+      },
+      "targets": [
+        {
+          "expr": "async_proxy_queue_depth{tier=\"proxy-egress\"}",
+          "legendFormat": "Egress Backlog",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 50
+              },
+              {
+                "color": "red",
+                "value": 200
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 7,
+      "title": "Ingress Queue Backlog",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 4
+      },
+      "targets": [
+        {
+          "expr": "async_proxy_queue_depth{tier=\"proxy-ingress\"}",
+          "legendFormat": "Ingress Backlog",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 50
+              },
+              {
+                "color": "red",
+                "value": 200
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 8,
+      "title": "End-to-End Transit Lag by Operation (p95 & p50)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, actor_type, op) (rate(actor_envelope_transit_lag_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "p95 Lag {{actor_type}}:{{op}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, actor_type, op) (rate(actor_envelope_transit_lag_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "p50 Lag {{actor_type}}:{{op}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "ms"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Async-Proxy Queue Depths (Egress Bottleneck vs Ingress Backlog)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "targets": [
+        {
+          "expr": "async_proxy_queue_depth{tier=\"proxy-egress\"}",
+          "legendFormat": "Egress Dispatch Queue (Backlog items)",
+          "refId": "A"
+        },
+        {
+          "expr": "async_proxy_queue_depth{tier=\"proxy-ingress\"}",
+          "legendFormat": "Ingress Batch Queue (Backlog items)",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 15
+          },
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Egress Dispatcher gRPC Stream Latency (p50 / p90 / p95 / p99)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(async_proxy_delivery_duration_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "Delivery Latency p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(async_proxy_delivery_duration_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "Delivery Latency p90",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(async_proxy_delivery_duration_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "Delivery Latency p95",
+          "refId": "C"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(async_proxy_delivery_duration_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "Delivery Latency p99",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "ms"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Actor Pure Step Execution Duration (p95 & p99)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, actor_type, op) (rate(actor_step_duration_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "Step p95 {{actor_type}}:{{op}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, actor_type, op) (rate(actor_step_duration_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "Step p99 {{actor_type}}:{{op}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "ms"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Live Distributed Traces (Jaeger Trace Explorer)",
+      "type": "table",
+      "datasource": {
+        "type": "jaeger",
+        "uid": "jaeger"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 14,
+        "x": 0,
+        "y": 24
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "jaeger",
+            "uid": "jaeger"
+          },
+          "queryType": "search",
+          "service": "election-actors",
+          "operation": "actor.step_execute",
+          "limit": 25,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "links": [
+            {
+              "title": "Open Trace in Jaeger UI",
+              "url": "http://localhost:16686/trace/${__data.fields.traceID}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "traceID"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 280
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "\u00b5s"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 13,
+      "title": "API HTTP Request Latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 10,
+        "x": 14,
+        "y": 24
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, path) (rate(http_request_duration_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "p50 {{path}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, path) (rate(http_request_duration_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "p95 {{path}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, path) (rate(http_request_duration_seconds_bucket[30s]))) * 1000",
+          "legendFormat": "p99 {{path}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "ms"
+        }
+      }
+    },
+    {
+      "id": 14,
+      "title": "Async-Proxy Message Throughput (Published vs Delivered)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 33
+      },
+      "targets": [
+        {
+          "expr": "sum by (tier, status) (rate(async_proxy_published_total[30s]))",
+          "legendFormat": "Published ({{tier}} - {{status}})",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (tier, status) (rate(async_proxy_delivered_total[30s]))",
+          "legendFormat": "Delivered ({{tier}} - {{status}})",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 15
+          },
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "title": "Actor Step Throughput (Processed Steps/s by Op & Status)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 33
+      },
+      "targets": [
+        {
+          "expr": "sum by (actor_type, op, status) (rate(actor_messages_processed_total[30s]))",
+          "legendFormat": "{{actor_type}}:{{op}} [{{status}}]",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 15
+          },
+          "unit": "ops"
+        }
+      }
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": [
+    "election-system",
+    "tracing",
+    "transit",
+    "jaeger"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m"
+    ]
+  },
+  "timezone": "browser",
+  "title": "Election System Distributed Tracing & Transit Breakdown",
+  "uid": "election-system-tracing",
+  "version": 1
+}

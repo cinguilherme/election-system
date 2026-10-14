@@ -5,8 +5,32 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
-  "id": null,
-  "links": [],
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Distributed Tracing Dashboard",
+      "tooltip": "Switch to Distributed Tracing & Transit Breakdown",
+      "type": "link",
+      "url": "/d/election-system-tracing"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Jaeger UI",
+      "tooltip": "Open native Jaeger UI",
+      "type": "link",
+      "url": "http://localhost:16686"
+    }
+  ],
   "panels": [
     {
       "id": 1,
