@@ -245,6 +245,11 @@
           "expr": "sum by (actor_type, op, status) (rate(actor_messages_processed_total[30s]))",
           "legendFormat": "{{actor_type}}:{{op}} ({{status}})",
           "refId": "A"
+        },
+        {
+          "expr": "sum by (instance) (rate(actor_messages_processed_total[30s]))",
+          "legendFormat": "Node: {{instance}}",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -409,5 +414,5 @@
   },
   "title": "Election System & d-core Scalability",
   "uid": "election-system-scalability",
-  "version": 4
+  "version": 5
 }
