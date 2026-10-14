@@ -206,3 +206,24 @@
      :ballot-tallies ballot-tallies
      :precinct-tallies precinct-summaries
      :election-tally election-summary}))
+
+(defn query-election-tally-summary
+  "Reads the aggregated national election tally summary row from `db` for `election-id`."
+  [db election-id]
+  (when db
+    (try
+      (let [eid (str election-id)
+            election-rows (sql/select db (merge {:table :election_tallies
+                                                 :where {:election_id eid}}
+                                                (instant-temporal-opts db :updated_at)))
+            row (first election-rows)]
+        (when row
+          {:election-id eid
+           :tallies (if-let [tj (row-val row :tallies_json)]
+                      (json/parse-string (str tj) true)
+                      {})
+           :precincts-reporting (long (or (row-val row :precincts_reporting) 0))
+           :total-votes (long (or (row-val row :total_votes) 0))
+           :flushes (long (or (row-val row :flushes) 0))
+           :updated-at (some-> (row-val row :updated_at) str)}))
+      (catch Exception _ nil))))

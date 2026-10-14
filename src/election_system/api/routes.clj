@@ -140,16 +140,36 @@
                                {:timeout-ms (or timeout-ms 5000)})]
       (json-response res 200))))
 
+(defonce ^:private tally-cache-atom (atom {}))
+
+(defn- get-cached-election-tally
+  [db election-id ttl-ms]
+  (let [now (System/currentTimeMillis)
+        cached (get @tally-cache-atom election-id)]
+    (if (and cached (< (- now (:cached-at cached)) ttl-ms))
+      (:data cached)
+      (let [data (or (writer/query-election-tally-summary db election-id)
+                     {:election-id (str election-id)
+                      :tallies {}
+                      :precinct-totals {}
+                      :precincts-reporting 0
+                      :total-votes 0
+                      :updates-received 0})]
+        (swap! tally-cache-atom assoc election-id {:cached-at now :data data})
+        data))))
+
 (defn- handle-election-tally
-  [{:keys [actor-client timeout-ms]}]
+  [{:keys [actor-client db timeout-ms]}]
   (fn [req]
-    (let [election-id (get-in req [:path-params :election-id])
-          res (actor/ask-sync! actor-client
-                               :election-tally
-                               election-id
-                               {:type :get-tally}
-                               {:timeout-ms (or timeout-ms 5000)})]
-      (json-response res 200))))
+    (let [election-id (get-in req [:path-params :election-id])]
+      (if db
+        (json-response (get-cached-election-tally db election-id 500) 200)
+        (let [res (actor/ask-sync! actor-client
+                                   :election-tally
+                                   election-id
+                                   {:type :get-tally}
+                                   {:timeout-ms (or timeout-ms 5000)})]
+          (json-response res 200))))))
 
 (defn- handle-election-audit
   [{:keys [actor-client db metrics-atom timeout-ms]}]
