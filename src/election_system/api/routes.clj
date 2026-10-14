@@ -7,6 +7,7 @@
             [d-core.actor-system.core :as actor]
             [d-core.core.metrics.prometheus :as prom]
             [d-core.core.metrics.protocol :as metrics-proto]
+            [d-core.core.metrics.tracing :as otel]
             [d-core.core.metrics.wrappers :as wrappers]
             [d-core.libs.time :as time]
             [election-system.db.writer :as writer]
@@ -214,9 +215,11 @@
                          ["/precincts/:precinct-id/window" {:post {:handler (handle-configure-window enriched-ctx)}}]
                          ["/precincts/:precinct-id/flush" {:post {:handler (handle-flush-precinct enriched-ctx)}}]
                          ["/precincts/:precinct-id/tally" {:get {:handler (handle-precinct-tally enriched-ctx)}}]]])
-                      (ring/create-default-handler))]
+                      (ring/create-default-handler))
+        traced-handler (otel/wrap-http-tracing base-handler {:service "election-api"
+                                                             :normalize-uri-fn normalize-election-uri})]
     (if eff-metrics
-      (wrappers/wrap-http-metrics base-handler eff-metrics {:service "election-api"
-                                                            :normalize-uri-fn normalize-election-uri})
-      base-handler)))
+      (wrappers/wrap-http-metrics traced-handler eff-metrics {:service "election-api"
+                                                             :normalize-uri-fn normalize-election-uri})
+      traced-handler)))
 

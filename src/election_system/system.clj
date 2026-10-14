@@ -12,6 +12,7 @@
             [d-core.core.databases.postgres]
             [d-core.core.databases.sqlite]
             [d-core.core.metrics.prometheus :as prom]
+            [d-core.core.metrics.tracing :as otel]
             [d-core.core.producers.common :as common-prod]
             [d-core.core.producers.in-memory :as im-prod]
             [d-core.queue]
@@ -129,6 +130,7 @@
          timeout-ms 10000}}]
   (let [{:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
         {:keys [prom-registry prom-metrics]} (init-prometheus true)
+        tracer-ctx (otel/init-tracer {:service-name (or (System/getenv "OTEL_SERVICE_NAME") "election-api")})
         metrics-atom (writer/make-write-metrics)
         ingress-transport (ap-transport/create-async-proxy-transport
                            {:transport :netty
@@ -150,17 +152,20 @@
      :tmp-file tmp-file
      :prom-registry prom-registry
      :prom-metrics prom-metrics
+     :tracer-ctx tracer-ctx
      :metrics-atom metrics-atom
      :ingress-transport ingress-transport
      :actor-client actor-client
      :jetty-server jetty-server}))
 
 (defn stop-api-node!
-  [{:keys [jetty-server ingress-transport pg-client tmp-file]}]
+  [{:keys [jetty-server ingress-transport pg-client tmp-file tracer-ctx]}]
   (when jetty-server
     (.stop ^org.eclipse.jetty.server.Server jetty-server))
   (when ingress-transport
     (ap-transport/close-async-proxy-transport! ingress-transport))
+  (when tracer-ctx
+    (otel/close-tracer! tracer-ctx))
   (when pg-client
     (pg-client/close! pg-client))
   (when tmp-file
@@ -193,6 +198,7 @@
          election-id "national-2026"}}]
   (let [{:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
         {:keys [prom-registry prom-metrics]} (init-prometheus true)
+        tracer-ctx (otel/init-tracer {:service-name (or (System/getenv "OTEL_SERVICE_NAME") "election-actors")})
         metrics-atom (writer/make-write-metrics)
         effect-handler (writer/make-effect-handler db metrics-atom nil prom-metrics)
         snapshot-store (sql-adapter/create-sql-snapshot-store db)
@@ -233,18 +239,21 @@
      :tmp-file tmp-file
      :prom-registry prom-registry
      :prom-metrics prom-metrics
+     :tracer-ctx tracer-ctx
      :metrics-atom metrics-atom
      :snapshot-store snapshot-store
      :workers workers
      :jetty-server jetty-server}))
 
 (defn stop-actors-node!
-  [{:keys [jetty-server workers pg-client tmp-file]}]
+  [{:keys [jetty-server workers pg-client tmp-file tracer-ctx]}]
   (when jetty-server
     (.stop ^org.eclipse.jetty.server.Server jetty-server))
   (doseq [{:keys [runtime transport]} workers]
     (actor-core/stop-runtime! runtime)
     (ap-transport/close-async-proxy-transport! transport))
+  (when tracer-ctx
+    (otel/close-tracer! tracer-ctx))
   (when pg-client
     (pg-client/close! pg-client))
   (when tmp-file

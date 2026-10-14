@@ -34,6 +34,9 @@ services:
       GRPC_PORT: "50051"
       BROKER_BACKEND: "jetstream"
       NATS_URL: "nats://nats:4222"
+      OTEL_SERVICE_NAME: "async-proxy-ingress"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
+      OTEL_SAMPLING_RATIO: "0.10"
       JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
     ports:
       - "4000:4000"
@@ -45,6 +48,7 @@ services:
       retries: 30
     depends_on:
       - nats
+      - jaeger
     cap_add:
       - SYS_PTRACE
     deploy:
@@ -62,6 +66,9 @@ services:
       GRPC_PORT: "50052"
       BROKER_BACKEND: "jetstream"
       NATS_URL: "nats://nats:4222"
+      OTEL_SERVICE_NAME: "async-proxy-egress"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
+      OTEL_SAMPLING_RATIO: "0.10"
       JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
     ports:
       - "4001:4001"
@@ -73,6 +80,7 @@ services:
       retries: 30
     depends_on:
       - nats
+      - jaeger
     cap_add:
       - SYS_PTRACE
     deploy:
@@ -99,8 +107,11 @@ services:
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
       DB_USER: "election"
       DB_PASSWORD: "election"
-      DB_POOL_SIZE: "4"
-      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
+      DB_POOL_SIZE: "8"
+      OTEL_SERVICE_NAME: "election-actors"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
+      OTEL_SAMPLING_RATIO: "0.10"
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=2 -XX:MaxRAMPercentage=75.0"
     ports:
       - "8081:8081"
     healthcheck:
@@ -113,12 +124,14 @@ services:
         condition: service_healthy
       async-proxy-egress:
         condition: service_healthy
+      jaeger:
+        condition: service_started
     cap_add:
       - SYS_PTRACE
     deploy:
       resources:
         limits:
-          cpus: "1.00"
+          cpus: "2.00"
           memory: 1536M
 
   election-api:
@@ -136,6 +149,9 @@ services:
       DB_USER: "election"
       DB_PASSWORD: "election"
       DB_POOL_SIZE: "2"
+      OTEL_SERVICE_NAME: "election-api"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
+      OTEL_SAMPLING_RATIO: "0.10"
       JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
     ports:
       - "8080:8080"
@@ -151,6 +167,8 @@ services:
         condition: service_healthy
       election-actors:
         condition: service_healthy
+      jaeger:
+        condition: service_started
     cap_add:
       - SYS_PTRACE
     deploy:
@@ -158,6 +176,20 @@ services:
         limits:
           cpus: "1.00"
           memory: 1536M
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
 
   prometheus:
     image: prom/prometheus:v2.53.0
@@ -189,6 +221,7 @@ services:
       - "3000:3000"
     depends_on:
       - prometheus
+      - jaeger
 
   k6:
     image: grafana/k6:0.52.0

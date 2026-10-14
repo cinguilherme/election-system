@@ -3,6 +3,7 @@
    Executes multi-row `insert-batch!` for ballots and `upsert!` for precinct/national tallies."
   (:require [cheshire.core :as json]
             [d-core.core.databases.protocols.simple-sql :as sql]
+            [d-core.core.metrics.tracing :as otel]
             [d-core.core.metrics.wrappers :as wrappers]
             [d-core.libs.time :as time]
             [duct.logger :as logger]))
@@ -135,22 +136,29 @@
      (fn [effect ctx]
        (let [eff-metrics (or prom-metrics (get-in ctx [:effect-ctx :metrics]))
              sql-inst (or default-sql-inst
-                          (when eff-metrics (wrappers/sql-instruments eff-metrics)))]
-         (try
-           (case (:type effect)
-             :db/flush-precinct
-             (flush-precinct-to-db! db metrics-atom eff-metrics sql-inst effect)
+                          (when eff-metrics (wrappers/sql-instruments eff-metrics)))
+             eff-type (:type effect)
+             ballot-cnt (count (:ballots effect))]
+         (otel/with-span [nil "actor.db_flush"
+                          {:kind :client
+                           :attributes {"db.system" (name (detect-engine db))
+                                        "effect.type" (name eff-type)
+                                        "ballot.count" ballot-cnt}}]
+           (try
+             (case eff-type
+               :db/flush-precinct
+               (flush-precinct-to-db! db metrics-atom eff-metrics sql-inst effect)
 
-             :db/flush-election-tally
-             (flush-election-tally-to-db! db metrics-atom eff-metrics sql-inst effect)
+               :db/flush-election-tally
+               (flush-election-tally-to-db! db metrics-atom eff-metrics sql-inst effect)
 
-             nil)
-           (catch Exception e
-             (when logger
-               (logger/log logger :error ::db-flush-failed
-                           {:effect-type (:type effect)
-                            :error (.getMessage e)}))
-             (throw e))))))))
+               nil)
+             (catch Exception e
+               (when logger
+                 (logger/log logger :error ::db-flush-failed
+                             {:effect-type eff-type
+                              :error (.getMessage e)}))
+               (throw e)))))))))
 
 (defn- row-val [row k]
   (or (get row k)
