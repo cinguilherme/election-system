@@ -9,6 +9,11 @@ scrape_configs:
       - targets: ['election-api-1:8080', 'election-api-2:8080']
         labels:
           tier: 'api'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '([^:]+)(?::\d+)?'
+        target_label: instance
+        replacement: '$1'
 
   - job_name: 'election-actors'
     metrics_path: '/metrics'
@@ -16,6 +21,11 @@ scrape_configs:
       - targets: ['election-actors:8081']
         labels:
           tier: 'actors'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '([^:]+)(?::\d+)?'
+        target_label: instance
+        replacement: '$1'
 
   - job_name: 'async-proxy-ingress'
     metrics_path: '/metrics'
@@ -23,6 +33,11 @@ scrape_configs:
       - targets: ['async-proxy-ingress:4000']
         labels:
           tier: 'proxy-ingress'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '([^:]+)(?::\d+)?'
+        target_label: instance
+        replacement: '$1'
 
   - job_name: 'async-proxy-egress'
     metrics_path: '/metrics'
@@ -30,3 +45,8 @@ scrape_configs:
       - targets: ['async-proxy-egress:4001']
         labels:
           tier: 'proxy-egress'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '([^:]+)(?::\d+)?'
+        target_label: instance
+        replacement: '$1'

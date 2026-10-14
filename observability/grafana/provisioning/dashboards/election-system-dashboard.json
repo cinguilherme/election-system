@@ -149,6 +149,11 @@
           "expr": "sum by (uri, status) (rate(http_requests_total[30s]))",
           "legendFormat": "{{uri}} [{{status}}]",
           "refId": "A"
+        },
+        {
+          "expr": "sum by (instance) (rate(http_requests_total[30s]))",
+          "legendFormat": "Node: {{instance}}",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -317,19 +322,19 @@
     },
     {
       "id": 13,
-      "title": "Service CPU Utilization (% of 1.0 CPU Container Quota)",
+      "title": "Container CPU Utilization by Service Instance",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
       "targets": [
         {
           "expr": "rate(process_cpu_seconds_total[30s])",
-          "legendFormat": "{{job}} CPU",
+          "legendFormat": "{{instance}} CPU",
           "refId": "A"
         },
         {
-          "expr": "sum by (job) (rate(jvm_gc_collection_seconds_sum[30s]))",
-          "legendFormat": "{{job}} GC CPU overhead",
+          "expr": "sum by (instance) (rate(jvm_gc_collection_seconds_sum[30s]))",
+          "legendFormat": "{{instance}} GC",
           "refId": "B"
         }
       ],
@@ -337,7 +342,6 @@
         "defaults": {
           "unit": "percentunit",
           "min": 0,
-          "max": 1.05,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -356,19 +360,19 @@
     },
     {
       "id": 14,
-      "title": "Service Memory Usage: Container RSS vs JVM Heap (1.5 GiB Limit)",
+      "title": "Service Memory Usage: Container RSS vs JVM Heap",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
       "targets": [
         {
           "expr": "process_resident_memory_bytes",
-          "legendFormat": "{{job}} Container RSS",
+          "legendFormat": "{{instance}} RSS",
           "refId": "A"
         },
         {
           "expr": "jvm_memory_bytes_used{area=\"heap\"}",
-          "legendFormat": "{{job}} JVM Heap Used",
+          "legendFormat": "{{instance}} JVM Heap",
           "refId": "B"
         }
       ],
@@ -376,13 +380,12 @@
         "defaults": {
           "unit": "bytes",
           "min": 0,
-          "max": 1610612736,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
               { "color": "yellow", "value": 1200000000 },
-              { "color": "red", "value": 1500000000 }
+              { "color": "red", "value": 1800000000 }
             ]
           },
           "custom": {
@@ -406,5 +409,5 @@
   },
   "title": "Election System & d-core Scalability",
   "uid": "election-system-scalability",
-  "version": 3
+  "version": 4
 }
