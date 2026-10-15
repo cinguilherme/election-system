@@ -2,6 +2,11 @@ global:
   scrape_interval: 2s
   evaluation_interval: 2s
 
+# Alert rules. Alertmanager is not deployed, so firing alerts surface in the
+# Prometheus UI (/alerts) rather than as notifications.
+rule_files:
+  - /etc/prometheus/rules/*.rules.yml
+
 scrape_configs:
   - job_name: 'election-api'
     metrics_path: '/metrics'

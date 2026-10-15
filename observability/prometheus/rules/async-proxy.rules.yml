@@ -1,0 +1,70 @@
+groups:
+  - name: async-proxy
+    interval: 15s
+    rules:
+      # The outage that motivated this whole file: the egress proxy restarted,
+      # every consumer stream went half-open and was never re-established, and
+      # the system kept returning 202 to 1.5M requests while consuming nothing.
+      # The only downstream symptom was a k6 teardown timeout.
+      #
+      # `or vector(0)` matters: when the egress is down its /metrics target goes
+      # away entirely, so a bare `sum(...) == 0` would return no data and the
+      # alert would stay silent during exactly the failure it exists to catch.
+      - alert: AsyncProxyConsumersDown
+        expr: |
+          (sum(async_proxy_active_subscriptions) or vector(0)) == 0
+          and
+          (sum(rate(async_proxy_published_total[2m])) or vector(0)) > 1
+        for: 1m
+        labels:
+          severity: critical
+          component: async-proxy
+        annotations:
+          summary: "async-proxy has zero active subscribers while traffic is flowing"
+          description: >-
+            No delivery subscriptions are registered, yet publishes are still
+            arriving ({{ $value | printf "%.1f" }} msg/s). Messages are being
+            persisted but nothing is consuming them. Check whether the egress
+            proxy restarted and whether the consumers re-subscribed:
+            `docker compose logs async-proxy-egress | grep -E "stream-(connected|disconnected)"`.
+
+      # Unbounded queue growth is what turns "slow consumer" into an OOM kill
+      # (observed: 98k messages queued, egress killed at 1019MiB/1024MiB).
+      - alert: AsyncProxyQueueBacklog
+        expr: sum(async_proxy_queue_depth) > 5000
+        for: 2m
+        labels:
+          severity: warning
+          component: async-proxy
+        annotations:
+          summary: "async-proxy consumer backlog is growing"
+          description: >-
+            {{ $value }} messages are queued in the egress proxy. With bounded
+            queues this now applies backpressure to the JetStream puller instead
+            of growing the heap; sustained backlog means consumers cannot keep up.
+
+      - alert: AsyncProxyContainerOOMKilled
+        expr: increase(container_oom_events_total{service=~"async-proxy.*"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          component: async-proxy
+        annotations:
+          summary: "async-proxy container was OOM-killed"
+          description: >-
+            {{ $labels.service }} hit its cgroup memory limit and was killed.
+            Expect a consumer outage to follow unless reconnection works.
+
+      - alert: AsyncProxyCPUSeverelyThrottled
+        expr: |
+          (sum by (service) (rate(container_cpu_cfs_throttled_periods_total{service=~"async-proxy.*"}[2m]))
+           / sum by (service) (rate(container_cpu_cfs_periods_total{service=~"async-proxy.*"}[2m]))) > 0.25
+        for: 5m
+        labels:
+          severity: warning
+          component: async-proxy
+        annotations:
+          summary: "{{ $labels.service }} is CPU-throttled {{ $value | humanizePercentage }} of periods"
+          description: >-
+            The container is pinned at its CPU quota. Application dashboards will
+            look healthy while latency is dominated by CFS throttling.

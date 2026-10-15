@@ -1,4 +1,4 @@
-.PHONY: tests unit integration benchmark lint clean up up-build up-perf down logs load-test load-test-docker stress-test stress-test-docker stress-test-single rate-test rate-test-docker profile profile-cpu profile-perf profile-alloc profile-wall profile-lock profile-mem threaddump throttling reset-data build-base ensure-base
+.PHONY: tests unit integration benchmark lint clean up up-build up-perf down logs load-test load-test-docker stress-test stress-test-docker stress-test-single rate-test rate-test-docker profile profile-cpu profile-perf profile-alloc profile-wall profile-lock profile-mem threaddump throttling purge-streams reset-data build-base ensure-base
 
 # Prebuild shared base image containing diagnostic utilities and async-profiler
 build-base:
@@ -196,16 +196,34 @@ threaddump:
 throttling:
 	@./observability/scripts/container-resources.sh
 
+# Purge every proxy_* JetStream stream.
+#
+# Two bugs are fixed here. The old target ran `nats stream purge` inside the
+# `nats` container, which has no nats CLI at all -- every call failed into
+# `|| true`, invisibly. And the names it tried (proxy_votes,
+# proxy_actor_election) do not match the streams actually in use, which are
+# partitioned (proxy_actor_precinct_p0..p7, proxy_actor_election-tally_p0..p7).
+# Between them, the backlog silently grew to 12.6 GB / 13.9M messages.
+NATS_INTERNAL ?= nats://nats:4222
+COMPOSE_NETWORK ?= election-system_default
+
+purge-streams:
+	@echo "Purging all proxy_* JetStream streams on $(NATS_INTERNAL)..."
+	@docker run --rm --network $(COMPOSE_NETWORK) natsio/nats-box:latest sh -c '\
+		nats -s $(NATS_INTERNAL) stream ls -n | grep "^proxy_" | while read s; do \
+			printf "  purging %-34s" "$$s"; \
+			if nats -s $(NATS_INTERNAL) stream purge -f "$$s" >/dev/null 2>&1; then echo " ok"; else echo " FAILED"; fi; \
+		done'
+	@docker run --rm --network $(COMPOSE_NETWORK) natsio/nats-box:latest \
+		nats -s $(NATS_INTERNAL) stream report 2>/dev/null | tail -4 || true
+
 # Fast benchmark data reset
 reset-data:
 	@echo "Stopping actors and API nodes to flush in-flight state..."
 	@docker compose stop election-actors-1 election-actors-2 election-api-1 election-api-2
 	@echo "Resetting PostgreSQL tables..."
 	@docker compose exec -T postgres psql -U election -d election_db -c "TRUNCATE TABLE ballots, precinct_tallies, election_tallies, actor_snapshots;"
-	@echo "Purging NATS JetStream messages..."
-	@docker compose exec -T nats nats stream purge -f proxy_votes >/dev/null 2>&1 || true
-	@docker compose exec -T nats nats stream purge -f proxy_actor_precinct >/dev/null 2>&1 || true
-	@docker compose exec -T nats nats stream purge -f proxy_actor_election >/dev/null 2>&1 || true
+	@$(MAKE) purge-streams
 	@echo "Starting actors and API nodes with clean state..."
 	@docker compose start election-actors-1 election-actors-2 election-api-1 election-api-2
 	@echo "Restarting reverse proxy..."

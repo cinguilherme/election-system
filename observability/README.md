@@ -237,6 +237,7 @@ make profile-wall  SERVICE=<svc> DURATION=30 # wall-clock flamegraph
 make profile-lock  SERVICE=<svc> DURATION=30 # lock contention flamegraph
 make threaddump    SERVICE=<svc>             # thread dump
 make up-perf                                 # bring stack up with SYS_ADMIN
+make purge-streams                           # purge ALL proxy_* JetStream streams
 ```
 
 `SERVICE` defaults to `async-proxy-ingress`; any compose service name works
@@ -244,7 +245,58 @@ make up-perf                                 # bring stack up with SYS_ADMIN
 
 ---
 
-## 7. Troubleshooting
+## 7. Proxy reliability model
+
+Three mechanisms keep the consumer side honest. Each exists because of a
+specific failure that was observed, not in theory.
+
+**Bounded queues + credit-based fetching.** Every per-topic queue is bounded
+(`QUEUE_CAPACITY`, default 10000). The JetStream puller clamps each fetch to the
+target queue's remaining capacity and only ACKs a message once it is safely
+queued; if the queue is still full it leaves the message **un-acked** so
+JetStream redelivers it. Before this, a fast puller outrunning a slow dispatcher
+grew the heap until the cgroup killed the container — `OOMKilled=true` at
+1019 MiB / 1024 MiB with ~98 k messages queued.
+
+**Stream reconnection + keepalive.** The consumer re-subscribes with exponential
+backoff (250 ms → 10 s) whenever its `:Subscribe` stream closes, and the client
+channel probes with HTTP/2 keepalive so a half-open connection is detected at
+all. Without this, a proxy restart silently retired every consumer *for the
+lifetime of the JVM*: no error, no log, and the API kept returning `202`.
+
+> The keepalive interval must be **greater than or equal to** what the server
+> permits. gRPC's default `permitKeepAliveTime` is 5 minutes; a client pinging
+> faster than that gets `GOAWAY ... ENHANCE_YOUR_CALM (too_many_pings)` and the
+> connection churns — worse than not probing at all. The proxy server therefore
+> sets `GRPC_PERMIT_KEEPALIVE_TIME_MS` (default 10 s) and
+> `GRPC_PERMIT_KEEPALIVE_WITHOUT_CALLS=true`, and the consumer probes at 30 s.
+
+**Bounded gRPC handler pool.** The server runs an elastic-but-capped
+`ThreadPoolExecutor` (core 2, max 16 on a 1-CPU container) instead of grpc-java's
+process-wide unbounded cached pool. The cached pool had grown to 289 threads,
+and the `SynchronousQueue` park/unpark churn alone was ~12 % of sampled CPU.
+Override with `GRPC_EXECUTOR_THREADS` / `GRPC_EXECUTOR_MAX_THREADS`.
+
+### Alerts
+
+`observability/prometheus/rules/async-proxy.rules.yml` (4 rules, no Alertmanager
+deployed — firing alerts show at <http://localhost:9090/alerts>):
+
+| Alert | Fires when |
+| :--- | :--- |
+| `AsyncProxyConsumersDown` | **zero** active subscriptions while publishes are arriving |
+| `AsyncProxyQueueBacklog` | > 5000 messages queued for 2 m |
+| `AsyncProxyContainerOOMKilled` | `container_oom_events_total` increases |
+| `AsyncProxyCPUSeverelyThrottled` | > 25 % of CFS periods throttled for 5 m |
+
+`AsyncProxyConsumersDown` uses `sum(...) or vector(0)` deliberately: when the
+egress dies its `/metrics` target disappears entirely, and a bare
+`sum(...) == 0` would return no data and stay silent during exactly the outage it
+exists to catch.
+
+---
+
+## 8. Troubleshooting
 
 | Symptom | Cause |
 | :--- | :--- |

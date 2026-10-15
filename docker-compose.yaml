@@ -37,7 +37,11 @@ services:
       OTEL_SERVICE_NAME: "async-proxy-ingress"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
-      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
+      # 75% of 1024 MiB leaves 256 MiB for metaspace/threads/direct buffers, but
+      # the measured non-heap footprint plus RSS headroom needs ~400 MiB -- the
+      # egress was OOM-killed (exit 137) with a 742 MiB heap max. 60% keeps the
+      # worst-case RSS under the cgroup limit.
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=60.0"
     ports:
       - "4000:4000"
       - "50051:50051"
@@ -58,7 +62,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.60"
+          cpus: "1.00"
           memory: 1024M
 
   async-proxy-egress:
@@ -73,7 +77,8 @@ services:
       OTEL_SERVICE_NAME: "async-proxy-egress"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
-      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
+      # See the ingress note: 75% of 1024 MiB leaves too little for non-heap.
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=60.0"
     ports:
       - "4001:4001"
       - "50052:50052"
@@ -94,7 +99,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.60"
+          cpus: "1.00"
           memory: 1024M
 
   election-actors-1:
@@ -378,6 +383,7 @@ services:
     image: prom/prometheus:v2.53.0
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
     ports:
       - "9090:9090"
     depends_on:
