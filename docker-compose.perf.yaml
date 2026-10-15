@@ -1,0 +1,40 @@
+# Opt-in override that grants the extra capability async-profiler needs for
+# perf_events sampling (`asprof -e cpu`).
+#
+# WHY THIS IS SEPARATE
+# --------------------
+# `-e cpu` needs perf_event_open. The base compose file grants CAP_PERFMON,
+# which is the correct and sufficient grant on a normal Linux host. It is NOT
+# sufficient on Docker Desktop (macOS/Windows), whose Linux VM ships
+# kernel.perf_event_paranoid=4; there perf_event_open for CPU events is only
+# permitted with CAP_SYS_ADMIN. Verified empirically in this environment:
+#
+#   CAP_PERFMON alone                        -> EACCES on every TID
+#   CAP_PERFMON + seccomp=unconfined         -> EACCES (so it is NOT seccomp)
+#   CAP_SYS_ADMIN + CAP_PERFMON              -> 0 failures, samples collected
+#
+# CAP_SYS_ADMIN is close to root-equivalent, so it is deliberately NOT granted
+# by default. Nothing else needs it: `-e ctimer`, `-e alloc`, `-e wall` and
+# `-e lock` all work with the default capabilities.
+#
+# USAGE
+# -----
+#   make up-perf                      # or:
+#   docker compose -f docker-compose.yaml -f docker-compose.perf.yaml up -d
+#   make profile-perf SERVICE=async-proxy-egress DURATION=30
+#
+# To go back to the restricted default:
+#   docker compose up -d
+services:
+  async-proxy-ingress:
+    cap_add: [SYS_PTRACE, PERFMON, SYS_ADMIN]
+  async-proxy-egress:
+    cap_add: [SYS_PTRACE, PERFMON, SYS_ADMIN]
+  election-actors-1:
+    cap_add: [SYS_PTRACE, PERFMON, SYS_ADMIN]
+  election-actors-2:
+    cap_add: [SYS_PTRACE, PERFMON, SYS_ADMIN]
+  election-api-1:
+    cap_add: [SYS_PTRACE, PERFMON, SYS_ADMIN]
+  election-api-2:
+    cap_add: [SYS_PTRACE, PERFMON, SYS_ADMIN]

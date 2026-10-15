@@ -50,3 +50,34 @@ scrape_configs:
         regex: '([^:]+)(?::\d+)?'
         target_label: instance
         replacement: '$1'
+
+  # Container-level resource telemetry. Prometheus could previously only see the
+  # application /metrics endpoints, so cgroup CPU quota, CFS throttling,
+  # working-set memory and OOM kills were invisible -- which is how the
+  # async-proxy containers were throttled ~25% of CFS periods while every
+  # application dashboard looked healthy.
+  #
+  # cAdvisor emits one series per container with a `name="docker/<container>"`
+  # label; the compose labels are promoted to stable `service` / `compose_project`
+  # labels so panels can group by logical service.
+  - job_name: 'cadvisor'
+    metrics_path: '/metrics'
+    scrape_interval: 2s
+    scrape_timeout: 2s
+    static_configs:
+      - targets: ['cadvisor:8080']
+    metric_relabel_configs:
+      - source_labels: [container_label_com_docker_compose_service]
+        regex: '(.+)'
+        target_label: service
+        replacement: '$1'
+      - source_labels: [container_label_com_docker_compose_project]
+        regex: '(.+)'
+        target_label: compose_project
+        replacement: '$1'
+      # Drop the raw cAdvisor label mirrors now that the values are promoted.
+      - regex: 'container_label_com_docker_compose_(service|project)'
+        action: labeldrop
+      # `id` duplicates `name` and bloats the index; `image` is not used for grouping.
+      - regex: 'id|image'
+        action: labeldrop

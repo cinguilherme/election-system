@@ -1,0 +1,1 @@
+["^ ","~$reset-compactor!",["^ ","~:row",14,"~:col",1,"~:fixed-arities",["~#set",[3]],"~:name","^0","~:ns","~$xtdb.compactor.reset","~:top-ns","^7","~:type","~:fn"],"~:filename","/Users/guilhermecintra/.m2/repository/com/xtdb/xtdb-core/2.1.0/xtdb-core-2.1.0.jar:xtdb/compactor/reset.clj"]

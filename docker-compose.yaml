@@ -51,6 +51,10 @@ services:
       - jaeger
     cap_add:
       - SYS_PTRACE
+      # PERFMON is required for `asprof -e cpu` (perf_events sampling).
+      # Without it perf_event_open fails with EPERM and async-profiler has to
+      # fall back to ctimer/itimer, which under-samples worker threads.
+      - PERFMON
     deploy:
       resources:
         limits:
@@ -83,6 +87,10 @@ services:
       - jaeger
     cap_add:
       - SYS_PTRACE
+      # PERFMON is required for `asprof -e cpu` (perf_events sampling).
+      # Without it perf_event_open fails with EPERM and async-profiler has to
+      # fall back to ctimer/itimer, which under-samples worker threads.
+      - PERFMON
     deploy:
       resources:
         limits:
@@ -130,6 +138,10 @@ services:
         condition: service_started
     cap_add:
       - SYS_PTRACE
+      # PERFMON is required for `asprof -e cpu` (perf_events sampling).
+      # Without it perf_event_open fails with EPERM and async-profiler has to
+      # fall back to ctimer/itimer, which under-samples worker threads.
+      - PERFMON
     deploy:
       resources:
         limits:
@@ -177,6 +189,10 @@ services:
         condition: service_started
     cap_add:
       - SYS_PTRACE
+      # PERFMON is required for `asprof -e cpu` (perf_events sampling).
+      # Without it perf_event_open fails with EPERM and async-profiler has to
+      # fall back to ctimer/itimer, which under-samples worker threads.
+      - PERFMON
     deploy:
       resources:
         limits:
@@ -222,6 +238,10 @@ services:
         condition: service_started
     cap_add:
       - SYS_PTRACE
+      # PERFMON is required for `asprof -e cpu` (perf_events sampling).
+      # Without it perf_event_open fails with EPERM and async-profiler has to
+      # fall back to ctimer/itimer, which under-samples worker threads.
+      - PERFMON
     deploy:
       resources:
         limits:
@@ -267,6 +287,10 @@ services:
         condition: service_started
     cap_add:
       - SYS_PTRACE
+      # PERFMON is required for `asprof -e cpu` (perf_events sampling).
+      # Without it perf_event_open fails with EPERM and async-profiler has to
+      # fall back to ctimer/itimer, which under-samples worker threads.
+      - PERFMON
     deploy:
       resources:
         limits:
@@ -309,6 +333,45 @@ services:
       resources:
         limits:
           cpus: "0.40"
+          memory: 512M
+
+  # Container-level resource telemetry. Without this, Prometheus only sees the
+  # six application /metrics endpoints, so cgroup CPU quota, CFS throttling,
+  # working-set memory and OOM events are invisible -- which is how the
+  # async-proxy containers were being throttled ~25% of CFS periods while every
+  # application dashboard looked healthy.
+  cadvisor:
+    # NOTE: ghcr.io, not gcr.io. The gcr.io/cadvisor mirror is stale at v0.55.1,
+    # and anything before v0.60.x cannot resolve container layers when Docker uses
+    # the containerd image store ("Storage Driver: overlayfs" on Docker Desktop 28),
+    # which silently yields a single root-cgroup series and no throttling metrics.
+    image: ghcr.io/google/cadvisor:v0.60.6
+    ports:
+      - "8089:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg
+    command:
+      # docker_only keeps cardinality down: only compose containers are exported,
+      # not every host cgroup.
+      - --docker_only=true
+      - --housekeeping_interval=2s
+      # store_container_labels MUST be false for the whitelist to take effect --
+      # with it true, every compose/image label is exported instead.
+      - --store_container_labels=false
+      # Whitelist only the compose labels, so Prometheus can promote a stable
+      # `service` label (e.g. async-proxy-egress) instead of parsing container names.
+      - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
           memory: 512M
 
   prometheus:

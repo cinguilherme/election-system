@@ -1,4 +1,4 @@
-.PHONY: tests unit integration benchmark lint clean up down logs load-test load-test-docker stress-test stress-test-docker stress-test-single rate-test rate-test-docker profile profile-cpu profile-mem threaddump reset-data build-base ensure-base
+.PHONY: tests unit integration benchmark lint clean up up-build up-perf down logs load-test load-test-docker stress-test stress-test-docker stress-test-single rate-test rate-test-docker profile profile-cpu profile-perf profile-alloc profile-wall profile-lock profile-mem threaddump throttling reset-data build-base ensure-base
 
 # Prebuild shared base image containing diagnostic utilities and async-profiler
 build-base:
@@ -31,6 +31,13 @@ up:
 
 up-build: ensure-base
 	docker compose up --build -d
+
+# Bring the stack up with CAP_SYS_ADMIN so `asprof -e cpu` (perf_events) works.
+# Only needed on Docker Desktop, where the VM sets kernel.perf_event_paranoid=4;
+# on a normal Linux host CAP_PERFMON in the base compose file is enough.
+# ctimer/alloc/wall/lock profiling works without this.
+up-perf:
+	docker compose -f docker-compose.yaml -f docker-compose.perf.yaml up -d
 
 down:
 	docker compose down -v
@@ -120,10 +127,23 @@ rate-test-docker:
 		k6
 
 # JVM Diagnostics & Flamegraphs using async-profiler
-# Usage: make profile SERVICE=async-proxy-ingress DURATION=30 EVENT=itimer
+# Usage: make profile SERVICE=async-proxy-ingress DURATION=30 EVENT=ctimer
+#
+# Event selection matters -- the wrong event gives actively misleading results:
+#   ctimer  CPU time, signal-based. No perf_events required. DEFAULT.
+#   cpu     CPU time via perf_events. Most accurate. Needs CAP_PERFMON
+#           (docker-compose adds it); some hosts also need perf_event_paranoid<=1.
+#   alloc   Allocation profiling -- use this to find garbage-churn hotspots.
+#   wall    Wall-clock across all threads -- read the GC_active line for GC share.
+#   lock    Lock contention.
+#
+# Do NOT use `itimer` for a CPU profile on PID 1: it under-samples worker threads.
+# A 30s itimer run returned 112 samples and made the proxy look ~4% busy, while
+# `docker stats` showed it pinned at its 0.60 CPU quota and throttled ~25% of CFS
+# periods. ctimer is the correct fallback when perf_events is unavailable.
 SERVICE ?= async-proxy-ingress
 DURATION ?= 30
-EVENT ?= itimer
+EVENT ?= ctimer
 
 profile:
 	@mkdir -p profiles
@@ -139,8 +159,22 @@ profile:
 	echo "To view: open $$OUT_FILE"
 
 profile-cpu:
-	@$(MAKE) profile SERVICE=$(SERVICE) DURATION=$(DURATION) EVENT=itimer
+	@$(MAKE) profile SERVICE=$(SERVICE) DURATION=$(DURATION) EVENT=ctimer
 
+# Hardware-sampled CPU profile (requires CAP_PERFMON + host perf_event access).
+profile-perf:
+	@$(MAKE) profile SERVICE=$(SERVICE) DURATION=$(DURATION) EVENT=cpu
+
+profile-alloc:
+	@$(MAKE) profile SERVICE=$(SERVICE) DURATION=$(DURATION) EVENT=alloc
+
+profile-wall:
+	@$(MAKE) profile SERVICE=$(SERVICE) DURATION=$(DURATION) EVENT=wall
+
+profile-lock:
+	@$(MAKE) profile SERVICE=$(SERVICE) DURATION=$(DURATION) EVENT=lock
+
+# Kept for backwards compatibility; prefer profile-alloc.
 profile-mem:
 	@$(MAKE) profile SERVICE=$(SERVICE) DURATION=$(DURATION) EVENT=alloc
 
@@ -154,6 +188,13 @@ threaddump:
 	echo "Capturing thread dump for $(SERVICE) ($$CID)..."; \
 	docker exec $$CID jcmd 1 Thread.print > $$OUT_FILE && \
 	echo "Thread dump saved to: $$OUT_FILE"
+
+# Container CPU throttling / quota / memory / OOM for every service (needs cadvisor).
+# This is the check that catches "every application dashboard looks healthy but the
+# container is being throttled" -- the blind spot that hid the async-proxy bottleneck.
+# Grafana equivalent: "Container Resources & Throttling" dashboard.
+throttling:
+	@./observability/scripts/container-resources.sh
 
 # Fast benchmark data reset
 reset-data:
