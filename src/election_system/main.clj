@@ -45,9 +45,11 @@
      :worker-count worker-cnt
      :assigned-partitions assigned-parts
      :total-partitions total-parts
-     :batch-size (env-long "BATCH_SIZE" 50)
-     :flush-every-n (env-long "FLUSH_EVERY_N" 5)
+     :batch-size (env-long "BATCH_SIZE" 200)
+     :flush-every-n (env-long "FLUSH_EVERY_N" 50)
      :tick-interval-ms (env-long "TICK_INTERVAL_MS" 2000)
+     :tick-min-batch (env-long "TICK_MIN_BATCH" 200)
+     :tick-max-age-ms (env-long "TICK_MAX_AGE_MS" 10000)
      :election-id (env-str "ELECTION_ID" "national-2026")
      :timeout-ms (env-long "TIMEOUT_MS" 10000)
      :max-threads (env-long "JETTY_MAX_THREADS" 120)

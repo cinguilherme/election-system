@@ -149,15 +149,28 @@
   (fn [req]
     (let [election-id (get-in req [:path-params :election-id])
           precinct-id (get-in req [:path-params :precinct-id])]
-      (if db
-        (json-response (get-cached-precinct-tally db election-id precinct-id 500) 200)
+      ;; The ACTOR is authoritative and live: it holds the tally in memory and
+      ;; answers without touching the database. The DB/cached path is only the
+      ;; fallback for a deployment with no actor client.
+      ;;
+      ;; Reading from the DB here was the reason the flush cadence could not be
+      ;; loosened: freshness of the read depended on write frequency, which put
+      ;; a full-state tally upsert on the ingestion hot path (measured 1:1 with
+      ;; ballot batches, ~52% of all statements under load).
+      (if actor-client
         (let [actor-id (domain/precinct-actor-id election-id precinct-id)
               res (actor/ask-sync! actor-client
                                    :precinct
                                    actor-id
                                    {:type :get-tally}
                                    {:timeout-ms (or timeout-ms 5000)})]
-          (json-response res 200))))))
+          (json-response res 200))
+        (json-response (if db
+                         (get-cached-precinct-tally db election-id precinct-id 500)
+                         {:election-id (str election-id)
+                          :precinct-id (str precinct-id)
+                          :tallies {} :total-votes 0})
+                       200)))))
 
 (defn- get-cached-election-tally
   [db election-id ttl-ms]
@@ -179,14 +192,21 @@
   [{:keys [actor-client db timeout-ms]}]
   (fn [req]
     (let [election-id (get-in req [:path-params :election-id])]
-      (if db
-        (json-response (get-cached-election-tally db election-id 500) 200)
+      ;; Actor-first, for the same reason as the precinct route above: the tally
+      ;; actor already holds the national aggregate and answers from memory.
+      (if actor-client
         (let [res (actor/ask-sync! actor-client
                                    :election-tally
                                    election-id
                                    {:type :get-tally}
                                    {:timeout-ms (or timeout-ms 5000)})]
-          (json-response res 200))))))
+          (json-response res 200))
+        (json-response (if db
+                         (get-cached-election-tally db election-id 500)
+                         {:election-id (str election-id) :tallies {}
+                          :precinct-totals {} :precincts-reporting 0
+                          :total-votes 0 :updates-received 0})
+                       200)))))
 
 (defn- handle-election-audit
   [{:keys [actor-client db metrics-atom timeout-ms]}]

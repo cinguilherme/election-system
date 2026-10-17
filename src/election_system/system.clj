@@ -28,11 +28,20 @@
 
 (defn make-entity-specs
   "Builds the `:precinct` and `:election-tally` entity behavior specifications."
-  [{:keys [election-id opens-at closes-at batch-size flush-every-n tick-interval-ms]}]
+  [{:keys [election-id opens-at closes-at batch-size flush-every-n tick-interval-ms
+           tick-min-batch tick-max-age-ms]}]
+  ;; batch-size is a floor, not the target: a precinct only reaches it if it sees
+  ;; enough votes. Under the load test each of ~250 precincts saw ~23 votes/s, so
+  ;; the old batch-size 50 was unreachable and the 2s tick flushed ~6-ballot
+  ;; batches instead -- 85k statements for 547k ballots (13% of intended size).
+  ;; tick-min-batch gates the tick so it stops manufacturing tiny batches, and
+  ;; tick-max-age-ms keeps a real staleness bound independent of tick frequency.
   {:precinct (precinct/make-precinct-spec {:election-id election-id
                                            :opens-at opens-at
                                            :closes-at closes-at
-                                           :batch-size (or batch-size 50)
+                                           :batch-size (or batch-size 200)
+                                           :tick-min-batch (or tick-min-batch (or batch-size 200))
+                                           :tick-max-age-ms (or tick-max-age-ms 10000)
                                            :tick-interval-ms tick-interval-ms})
    :election-tally (tally/make-election-tally-spec {:flush-every-n (or flush-every-n 10)
                                                     :tick-interval-ms tick-interval-ms})})
@@ -191,14 +200,15 @@
    partitions connected to `d-core-async-proxy` over gRPC, writing batches to SQL, and
    exposing `/metrics` on `metrics-port`."
   [{:keys [metrics-port proxy-host proxy-grpc-port worker-count batch-size flush-every-n
-           tick-interval-ms election-id opens-at closes-at db-opts
+           tick-interval-ms tick-min-batch tick-max-age-ms election-id opens-at closes-at db-opts
            assigned-partitions total-partitions]
     :or {metrics-port 8081
          proxy-host "localhost"
          proxy-grpc-port 50051
-         batch-size 50
-         flush-every-n 5
+         batch-size 200
+         flush-every-n 50
          tick-interval-ms 2000
+         tick-max-age-ms 10000
          election-id "national-2026"}}]
   (let [assigned (vec (or assigned-partitions (range (or worker-count 4))))
         tot-partitions (long (or total-partitions (max (count assigned) (or worker-count 4))))
@@ -214,6 +224,8 @@
                                      :closes-at closes-at
                                      :batch-size batch-size
                                      :flush-every-n flush-every-n
+                                     :tick-min-batch (or tick-min-batch batch-size)
+                                     :tick-max-age-ms (or tick-max-age-ms 10000)
                                      :tick-interval-ms tick-interval-ms})
         workers (mapv (fn [idx]
                         (let [t (ap-transport/create-async-proxy-transport

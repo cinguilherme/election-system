@@ -114,9 +114,15 @@ services:
       ASSIGNED_PARTITIONS: "0,1,2,3"
       TOTAL_PARTITIONS: "8"
       WORKER_COUNT: "4"
-      BATCH_SIZE: "50"
-      FLUSH_EVERY_N: "25"
+      # Batch/write policy. BATCH_SIZE is a floor that a busy precinct may not
+      # reach; TICK_MIN_BATCH stops the periodic tick from manufacturing tiny
+      # batches (measured: 6.44 ballots per statement vs batch-size 50, i.e. 13%
+      # of intended size) and TICK_MAX_AGE_MS is the real staleness bound.
+      BATCH_SIZE: "200"
+      FLUSH_EVERY_N: "50"
       TICK_INTERVAL_MS: "2000"
+      TICK_MIN_BATCH: "200"
+      TICK_MAX_AGE_MS: "10000"
       ELECTION_ID: "national-2026"
       DB_ENGINE: "postgres"
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
@@ -165,9 +171,15 @@ services:
       ASSIGNED_PARTITIONS: "4,5,6,7"
       TOTAL_PARTITIONS: "8"
       WORKER_COUNT: "4"
-      BATCH_SIZE: "50"
-      FLUSH_EVERY_N: "25"
+      # Batch/write policy. BATCH_SIZE is a floor that a busy precinct may not
+      # reach; TICK_MIN_BATCH stops the periodic tick from manufacturing tiny
+      # batches (measured: 6.44 ballots per statement vs batch-size 50, i.e. 13%
+      # of intended size) and TICK_MAX_AGE_MS is the real staleness bound.
+      BATCH_SIZE: "200"
+      FLUSH_EVERY_N: "50"
       TICK_INTERVAL_MS: "2000"
+      TICK_MIN_BATCH: "200"
+      TICK_MAX_AGE_MS: "10000"
       ELECTION_ID: "national-2026"
       DB_ENGINE: "postgres"
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"

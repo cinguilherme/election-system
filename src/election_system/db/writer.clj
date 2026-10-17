@@ -87,19 +87,24 @@
        (record-metric! metrics-atom :batch-inserts-count 1)
        (when metrics-atom
          (swap! metrics-atom update :ballots-persisted-count (fnil + 0) ballot-count)))
-     (execute-with-sql-metrics
-      prom-metrics sql-inst
-      {:table :precinct_tallies :operation :upsert :rows 1}
-      #(sql/upsert! db
-                    {:election_id (str election-id)
-                     :precinct_id (str precinct-id)
-                     :tallies_json (json/generate-string (or tallies {}))
-                     :total_votes (long (or total-votes 0))
-                     :flushes (long (or flushes 0))
-                     :last_sequence (some-> last-sequence str)
-                     :updated_at now-inst}
-                    tally-opts))
-     (record-metric! metrics-atom :precinct-upserts-count 1))))
+     ;; The tally row is a snapshot of state the ACTOR already owns and now serves
+     ;; reads from, so the ingestion hot path omits it (`:tallies` absent) and only
+     ;; explicit/tick flushes write it. Ballot rows -- the actual immutable record
+     ;; -- are still written above on every flush.
+     (when (some? tallies)
+       (execute-with-sql-metrics
+        prom-metrics sql-inst
+        {:table :precinct_tallies :operation :upsert :rows 1}
+        #(sql/upsert! db
+                      {:election_id (str election-id)
+                       :precinct_id (str precinct-id)
+                       :tallies_json (json/generate-string (or tallies {}))
+                       :total_votes (long (or total-votes 0))
+                       :flushes (long (or flushes 0))
+                       :last_sequence (some-> last-sequence str)
+                       :updated_at now-inst}
+                      tally-opts))
+       (record-metric! metrics-atom :precinct-upserts-count 1)))))
 
 (defn flush-election-tally-to-db!
   "Upserts the national election tally summary row via `sql/upsert!`."

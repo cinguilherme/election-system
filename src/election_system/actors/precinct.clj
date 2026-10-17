@@ -11,13 +11,20 @@
 (defn init-precinct-state
   ([precinct-id]
    (init-precinct-state precinct-id {}))
-  ([precinct-id {:keys [election-id opens-at closes-at batch-size]}]
+  ([precinct-id {:keys [election-id opens-at closes-at batch-size tick-min-batch
+                        tick-interval-ms tick-max-age-ms]}]
    (let [parsed (domain/parse-precinct-actor-id precinct-id election-id)]
      {:precinct-id (:precinct-id parsed)
       :election-id (:election-id parsed)
       :opens-at opens-at
       :closes-at closes-at
       :batch-size (long (or batch-size 50))
+      :tick-min-batch (long (or tick-min-batch 0))
+      :tick-interval-ms (long (or tick-interval-ms 2000))
+      ;; Independent of tick FREQUENCY: how long a partial batch may sit before it
+      ;; is written regardless of size. This is the actual staleness bound.
+      :tick-max-age-ms (long (or tick-max-age-ms 10000))
+      :last-flush-at (System/currentTimeMillis)
       :voted-ids #{}
       :tallies {}
       :total-votes 0
@@ -30,24 +37,33 @@
       :last-sequence nil})))
 
 (defn execute-flush-transition
-  "Purely transitions a dirty precinct state into a flushed state and emits
-   the batched DB write effect, parent tally delta `:tell` effect, and snapshot effect."
-  [state]
-  (if-not (or (:dirty? state) (seq (:pending-ballots state)) (seq (:pending-deltas state)))
+  "Purely transitions a dirty precinct state into a flushed state and emits the
+   batched DB write effect, parent tally delta `:tell` effect, and snapshot effect.
+
+   `write-tally?` controls whether the flush also upserts the full precinct tally
+   row. That row is a snapshot of state the ACTOR already owns and serves reads
+   from, so writing it on the ingestion hot path was pure overhead: measured at
+   exactly 1:1 with ballot batches, and ~52% of all SQL statements under load.
+   The batch-triggered flush passes false; explicit/tick flushes still write it
+   so the DB retains a periodic tally checkpoint."
+  ([state] (execute-flush-transition state true))
+  ([state write-tally?]
+   (if-not (or (:dirty? state) (seq (:pending-ballots state)) (seq (:pending-deltas state)))
     [state {:status :noop :flushes (:flushes state)} []]
     (let [next-flushes (inc (long (or (:flushes state) 0)))
           ballots (:pending-ballots state)
           deltas (:pending-deltas state)
           election-id (:election-id state)
           precinct-id (:precinct-id state)
-          effects (cond-> [{:type :db/flush-precinct
-                            :election-id election-id
-                            :precinct-id precinct-id
-                            :ballots ballots
-                            :tallies (:tallies state)
-                            :total-votes (:total-votes state)
-                            :flushes next-flushes
-                            :last-sequence (:last-sequence state)}]
+          effects (cond-> [(cond-> {:type :db/flush-precinct
+                                    :election-id election-id
+                                    :precinct-id precinct-id
+                                    :ballots ballots
+                                    :flushes next-flushes
+                                    :last-sequence (:last-sequence state)}
+                             write-tally?
+                             (assoc :tallies (:tallies state)
+                                    :total-votes (:total-votes state)))]
                     (seq deltas)
                     (conj {:type :tell
                            :entity-type :election-tally
@@ -65,13 +81,14 @@
                                :pending-ballots []
                                :pending-deltas {}
                                :dirty? false
-                               :flushes next-flushes)]
+                               :flushes next-flushes
+                               :last-flush-at (System/currentTimeMillis))]
       [flushed-state
        {:status :flushed
         :precinct-id precinct-id
         :flushed-ballots (count ballots)
         :flushes next-flushes}
-       effects])))
+       effects]))))
 
 (defn- handle-cast-vote
   [state msg ctx]
@@ -127,7 +144,8 @@
                        :candidate-id candidate-id
                        :precinct-total (:total-votes updated)}]
             (if (>= (count (:pending-ballots updated)) batch-size)
-              (let [[flushed-state _flush-reply effects] (execute-flush-transition updated)]
+              (let [[flushed-state _flush-reply effects]
+                    (execute-flush-transition updated false)]
                 [flushed-state (assoc reply :flushed? true) effects])
               [updated reply []])))))))
 
@@ -153,8 +171,25 @@
       :cast-vote
       (handle-cast-vote state msg ctx)
 
-      (:tick :flush)
+      :flush
       (execute-flush-transition state)
+
+      :tick
+      ;; The tick used to flush unconditionally every tick-interval-ms, which at
+      ;; 250 precincts meant batches of ~6 ballots instead of the configured
+      ;; batch-size -- 85k insert statements for 547k ballots (13% of intended
+      ;; batch size). Require a minimum pending batch, falling back to flushing
+      ;; on age so nothing lingers indefinitely.
+      (let [pending (count (:pending-ballots state))
+            min-batch (long (or (:tick-min-batch state) 0))
+            last-at (long (or (:last-flush-at state) 0))
+            age-ms (- (System/currentTimeMillis) last-at)
+            max-age (long (or (:tick-max-age-ms state) 10000))]
+        (if (or (zero? pending)
+                (>= pending min-batch)
+                (>= age-ms max-age))
+          (execute-flush-transition state)
+          [state {:status :deferred :pending-ballots pending} []]))
 
       :get-tally
       [state
