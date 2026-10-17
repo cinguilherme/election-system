@@ -232,7 +232,11 @@ services:
       DB_USER: "election"
       DB_PASSWORD: "election"
       DB_POOL_SIZE: "8"
-      JETTY_MAX_THREADS: "120"
+      # Jetty request threads. At 120/node the API saturated with in-flight
+      # pinned at ~117/node (2 nodes => ~234 total) while CPU stayed at ~1% and
+      # postgres at 0.2% throttle -- i.e. requests queued for a thread, not for a
+      # resource. Raised so the pool stops being the binding constraint.
+      JETTY_MAX_THREADS: "400"
       OTEL_SERVICE_NAME: "election-api-1"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
@@ -281,7 +285,11 @@ services:
       DB_USER: "election"
       DB_PASSWORD: "election"
       DB_POOL_SIZE: "8"
-      JETTY_MAX_THREADS: "120"
+      # Jetty request threads. At 120/node the API saturated with in-flight
+      # pinned at ~117/node (2 nodes => ~234 total) while CPU stayed at ~1% and
+      # postgres at 0.2% throttle -- i.e. requests queued for a thread, not for a
+      # resource. Raised so the pool stops being the binding constraint.
+      JETTY_MAX_THREADS: "400"
       OTEL_SERVICE_NAME: "election-api-2"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
