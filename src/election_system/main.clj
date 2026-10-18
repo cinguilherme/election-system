@@ -31,6 +31,13 @@
   (when-let [v (env-str k nil)]
     (mapv str/trim (str/split v #","))))
 
+(defn- default-instance-id
+  []
+  (or (env-str "HOSTNAME" nil)
+      (try (.getHostName (java.net.InetAddress/getLocalHost))
+           (catch Exception _ nil))
+      (str "actors-" (subs (str (random-uuid)) 0 8))))
+
 (defn parse-partition-list
   "Parses a comma-delimited partition list string (e.g. '0,1,2,3') into a vector of longs."
   [s]
@@ -48,8 +55,17 @@
         assigned-parts (parse-partition-list (env-str "ASSIGNED_PARTITIONS" nil))
         worker-cnt (env-long "WORKER_COUNT" (if (seq assigned-parts) (count assigned-parts) 4))
         total-parts (env-long "TOTAL_PARTITIONS" (or (when (seq assigned-parts) (max worker-cnt (count assigned-parts))) 8))
-        instance-id (env-str "INSTANCE_ID" nil)
-        ownership-members (env-list "OWNERSHIP_MEMBERS")]
+        explicit-instance-id (env-str "INSTANCE_ID" nil)
+        ownership-enabled? (if (some? (env-str "OWNERSHIP_ENABLED" nil))
+                             (env-bool "OWNERSHIP_ENABLED" true)
+                             (some? explicit-instance-id))
+        instance-id (or explicit-instance-id
+                        (when ownership-enabled? (default-instance-id)))
+        ownership-members (env-list "OWNERSHIP_MEMBERS")
+        actors-replicas (env-long "ACTORS_REPLICAS" nil)
+        max-parts (or (env-long "MAX_PARTITIONS_PER_INSTANCE" nil)
+                      (when (and total-parts actors-replicas (pos? actors-replicas))
+                        (long (Math/ceil (/ (double total-parts) (double actors-replicas))))))]
     {:role role
      :http-port (env-long "HTTP_PORT" 8080)
      :metrics-port (env-long "METRICS_PORT" 8081)
@@ -58,9 +74,10 @@
      :worker-count worker-cnt
      :assigned-partitions assigned-parts
      :total-partitions total-parts
-     ;; Partition ownership. Enabled by giving the node an INSTANCE_ID; the
-     ;; rendezvous assignment needs the full member list, and the leases need a
-     ;; valkey to live in. With this off the node falls back to
+     ;; Partition ownership. Enabled via OWNERSHIP_ENABLED=true (defaulting
+     ;; INSTANCE_ID to the container's HOSTNAME so scaled replicas need no
+     ;; per-instance config) or by setting INSTANCE_ID directly. Live membership
+     ;; comes from Valkey heartbeats. With this off the node falls back to
      ;; ASSIGNED_PARTITIONS, which is what local runs and the multi-tier test
      ;; cluster use.
      :drain-timeout-ms (env-long "DRAIN_TIMEOUT_MS" 20000)
@@ -71,8 +88,7 @@
      ;; These are NATS messages, not DB writes -- and because the tally flushes
      ;; every N tells, coalescing reduces DB flushes too (fewer, larger batches).
      :tell-interval-ms (env-long "TELL_INTERVAL_MS" 200)
-     :ownership {:enabled? (and (some? instance-id)
-                                (env-bool "OWNERSHIP_ENABLED" true))
+     :ownership {:enabled? (and (some? instance-id) ownership-enabled?)
                  :group (env-str "OWNERSHIP_GROUP" "actors")
                  :instance-id instance-id
                  :members (or (seq ownership-members)
@@ -84,9 +100,9 @@
                  ;; partitions become claimable in seconds, not minutes.
                  :heartbeat-ttl-ms (env-long "HEARTBEAT_TTL_MS" 20000)
                  ;; Even distribution. nil = pure rendezvous (no rebalancing);
-                 ;; a number caps what one instance will hold. Set it to
-                 ;; ceil(TOTAL_PARTITIONS / replicas): with 12 over 2 that is 6.
-                 :max-partitions (env-long "MAX_PARTITIONS_PER_INSTANCE" nil)
+                 ;; a number caps what one instance will hold. Derived as
+                 ;; ceil(TOTAL_PARTITIONS / ACTORS_REPLICAS) when not explicitly set.
+                 :max-partitions max-parts
                  ;; How long a survivor may exceed the cap before forgoing the
                  ;; excess, so one healthy node can serve everything briefly
                  ;; after a failure instead of leaving shards unowned.

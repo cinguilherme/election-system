@@ -10,51 +10,59 @@ rule_files:
 scrape_configs:
   - job_name: 'election-api'
     metrics_path: '/metrics'
-    static_configs:
-      - targets: ['election-api-1:8080', 'election-api-2:8080']
-        labels:
-          tier: 'api'
+    dns_sd_configs:
+      - names: ['election-api-backend']
+        type: 'A'
+        port: 8080
     relabel_configs:
+      - target_label: tier
+        replacement: 'api'
       - source_labels: [__address__]
         regex: '([^:]+)(?::\d+)?'
         target_label: instance
-        replacement: '$1'
+        replacement: 'election-api ($1)'
 
   - job_name: 'election-actors'
     metrics_path: '/metrics'
-    static_configs:
-      - targets: ['election-actors-1:8081', 'election-actors-2:8082']
-        labels:
-          tier: 'actors'
+    dns_sd_configs:
+      - names: ['election-actors']
+        type: 'A'
+        port: 8081
     relabel_configs:
+      - target_label: tier
+        replacement: 'actors'
       - source_labels: [__address__]
         regex: '([^:]+)(?::\d+)?'
         target_label: instance
-        replacement: '$1'
+        replacement: 'election-actors ($1)'
 
   - job_name: 'async-proxy-ingress'
     metrics_path: '/metrics'
-    static_configs:
-      - targets: ['async-proxy-1:4000', 'async-proxy-2:4000', 'async-proxy-3:4000']
-        labels:
-          tier: 'proxy-ingress'
+    dns_sd_configs:
+      - names: ['async-proxy']
+        type: 'A'
+        port: 4000
     relabel_configs:
+      - target_label: tier
+        replacement: 'proxy-ingress'
       - source_labels: [__address__]
         regex: '([^:]+)(?::\d+)?'
         target_label: instance
-        replacement: '$1'
+        replacement: 'async-proxy ($1)'
 
   - job_name: 'async-proxy-egress'
     metrics_path: '/metrics'
-    static_configs:
-      - targets: ['async-proxy-1:4000', 'async-proxy-2:4000', 'async-proxy-3:4000']
-        labels:
-          tier: 'proxy-egress'
+    dns_sd_configs:
+      - names: ['async-proxy']
+        type: 'A'
+        port: 4000
     relabel_configs:
+      - target_label: tier
+        replacement: 'proxy-egress'
       - source_labels: [__address__]
         regex: '([^:]+)(?::\d+)?'
         target_label: instance
-        replacement: '$1'
+        replacement: 'async-proxy ($1)'
 
   # Container-level resource telemetry. Prometheus could previously only see the
   # application /metrics endpoints, so cgroup CPU quota, CFS throttling,

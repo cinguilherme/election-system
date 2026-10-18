@@ -26,15 +26,9 @@
 # To go back to the restricted default:
 #   docker compose up -d
 services:
-  async-proxy-ingress:
+  async-proxy:
     cap_add: [SYS_PTRACE, PERFMON, SYS_ADMIN]
-  async-proxy-egress:
+  election-actors:
     cap_add: [SYS_PTRACE, PERFMON, SYS_ADMIN]
-  election-actors-1:
-    cap_add: [SYS_PTRACE, PERFMON, SYS_ADMIN]
-  election-actors-2:
-    cap_add: [SYS_PTRACE, PERFMON, SYS_ADMIN]
-  election-api-1:
-    cap_add: [SYS_PTRACE, PERFMON, SYS_ADMIN]
-  election-api-2:
+  election-api-backend:
     cap_add: [SYS_PTRACE, PERFMON, SYS_ADMIN]

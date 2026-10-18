@@ -151,13 +151,13 @@ rate-test-docker:
 # A 30s itimer run returned 112 samples and made the proxy look ~4% busy, while
 # `docker stats` showed it pinned at its 0.60 CPU quota and throttled ~25% of CFS
 # periods. ctimer is the correct fallback when perf_events is unavailable.
-SERVICE ?= async-proxy-ingress
+SERVICE ?= async-proxy
 DURATION ?= 30
 EVENT ?= ctimer
 
 profile:
 	@mkdir -p profiles
-	@CID=$$(docker compose ps -q $(SERVICE)); \
+	@CID=$$(docker compose ps -q $(SERVICE) | head -n 1); \
 	if [ -z "$$CID" ]; then \
 		echo "Error: Service $(SERVICE) is not running."; exit 1; \
 	fi; \
@@ -190,7 +190,7 @@ profile-mem:
 
 threaddump:
 	@mkdir -p profiles
-	@CID=$$(docker compose ps -q $(SERVICE)); \
+	@CID=$$(docker compose ps -q $(SERVICE) | head -n 1); \
 	if [ -z "$$CID" ]; then \
 		echo "Error: Service $(SERVICE) is not running."; exit 1; \
 	fi; \
@@ -230,12 +230,12 @@ purge-streams:
 # Fast benchmark data reset
 reset-data:
 	@echo "Stopping actors and API nodes to flush in-flight state..."
-	@docker compose stop election-actors-1 election-actors-2 election-api-1 election-api-2
+	@docker compose stop election-actors election-api-backend
 	@echo "Resetting PostgreSQL tables..."
 	@docker compose exec -T postgres psql -U election -d election_db -c "TRUNCATE TABLE ballots, precinct_tallies, election_tallies, actor_snapshots;"
 	@$(MAKE) purge-streams
 	@echo "Starting actors and API nodes with clean state..."
-	@docker compose start election-actors-1 election-actors-2 election-api-1 election-api-2
+	@docker compose start election-actors election-api-backend
 	@echo "Restarting reverse proxy..."
 	@docker compose restart election-api
 	@echo "Waiting for cluster to become healthy..."
@@ -286,11 +286,11 @@ registry:
 # pushed (and that fail anyway, since we cannot write to their registries).
 # ONE image per build, shared by every container that runs it. Two services own
 # a build and the rest just reference the image:
-#   async-proxy-1      builds election-system-async-proxy (proxies 1..3)
-#   election-actors-1  builds election-system            (ROLE selects api/actors)
+#   async-proxy      builds election-system-async-proxy
+#   election-actors  builds election-system            (ROLE selects api/actors)
 # The four config services are also images now: a worker machine needs nothing
 # but the compose files and the registry -- no observability/ tree on disk.
-BUILT  = async-proxy-1 election-actors-1 election-api async-proxy-gateway \
+BUILT  = async-proxy election-actors election-api async-proxy-gateway \
          prometheus grafana k6
 IMAGES = election-system-async-proxy election-system election-system-api-lb \
          election-system-proxy-gateway election-system-prometheus \

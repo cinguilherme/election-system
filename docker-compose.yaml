@@ -66,7 +66,7 @@ services:
           cpus: "0.75"
           memory: 512M
 
-  async-proxy-1:
+  async-proxy:
     image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-async-proxy:${TAG:-latest}
     build:
       context: ..
@@ -81,47 +81,7 @@ services:
       GRPC_PORT: "50051"
       BROKER_BACKEND: "jetstream"
       NATS_URL: "nats://nats:4222"
-      OTEL_SERVICE_NAME: "async-proxy-1"
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
-      OTEL_SAMPLING_RATIO: "0.10"
-      # General purpose: the same gRPC service answers publish and subscribe, so
-      # every replica may serve either role -- and must therefore validate lease
-      # ownership. Fail-closed: if the lease store is unreachable the
-      # subscription is refused rather than two nodes consuming one partition.
-      LEASE_VALIDATION: "1"
-      OWNERSHIP_ASSIGNMENT: "external"
-      VALKEY_URI: "redis://valkey:6379"
-      # 60% keeps worst-case RSS under the cgroup limit (see the ingress/egress
-      # history: 75% of 1024 MiB left too little for non-heap and got OOM-killed).
-      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=60.0"
-    ports:
-      - "4000:4000"
-    healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4000 && exec 4<>/dev/tcp/127.0.0.1/50051"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-    depends_on:
-      - nats
-      - valkey
-    cap_add:
-      - SYS_PTRACE
-      # PERFMON is required for `asprof -e cpu` (perf_events sampling).
-      - PERFMON
-    deploy:
-      resources:
-        limits:
-          cpus: "1.00"
-          memory: 1024M
-
-  async-proxy-2:
-    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-async-proxy:${TAG:-latest}
-    environment:
-      PORT: "4000"
-      GRPC_PORT: "50051"
-      BROKER_BACKEND: "jetstream"
-      NATS_URL: "nats://nats:4222"
-      OTEL_SERVICE_NAME: "async-proxy-2"
+      OTEL_SERVICE_NAME: "async-proxy"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
       # General purpose: the same gRPC service answers publish and subscribe, so
@@ -147,44 +107,7 @@ services:
       # PERFMON is required for `asprof -e cpu` (perf_events sampling).
       - PERFMON
     deploy:
-      resources:
-        limits:
-          cpus: "1.00"
-          memory: 1024M
-
-  async-proxy-3:
-    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-async-proxy:${TAG:-latest}
-    environment:
-      PORT: "4000"
-      GRPC_PORT: "50051"
-      BROKER_BACKEND: "jetstream"
-      NATS_URL: "nats://nats:4222"
-      OTEL_SERVICE_NAME: "async-proxy-3"
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
-      OTEL_SAMPLING_RATIO: "0.10"
-      # General purpose: the same gRPC service answers publish and subscribe, so
-      # every replica may serve either role -- and must therefore validate lease
-      # ownership. Fail-closed: if the lease store is unreachable the
-      # subscription is refused rather than two nodes consuming one partition.
-      LEASE_VALIDATION: "1"
-      OWNERSHIP_ASSIGNMENT: "external"
-      VALKEY_URI: "redis://valkey:6379"
-      # 60% keeps worst-case RSS under the cgroup limit (see the ingress/egress
-      # history: 75% of 1024 MiB left too little for non-heap and got OOM-killed).
-      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=60.0"
-    healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4000 && exec 4<>/dev/tcp/127.0.0.1/50051"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-    depends_on:
-      - nats
-      - valkey
-    cap_add:
-      - SYS_PTRACE
-      # PERFMON is required for `asprof -e cpu` (perf_events sampling).
-      - PERFMON
-    deploy:
+      replicas: ${PROXY_REPLICAS:-3}
       resources:
         limits:
           cpus: "1.00"
@@ -215,11 +138,7 @@ services:
       timeout: 3s
       retries: 10
     depends_on:
-      async-proxy-1:
-        condition: service_healthy
-      async-proxy-2:
-        condition: service_healthy
-      async-proxy-3:
+      async-proxy:
         condition: service_healthy
     deploy:
       resources:
@@ -233,7 +152,7 @@ services:
           - async-proxy-ingress
           - async-proxy-egress
 
-  election-actors-1:
+  election-actors:
     image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system:${TAG:-latest}
     build:
       context: ..
@@ -248,17 +167,16 @@ services:
       METRICS_PORT: "8081"
       ASYNC_PROXY_HOST: "async-proxy-egress"
       ASYNC_PROXY_GRPC_PORT: "50052"
-      # Partition ownership. The node claims its rendezvous share of
-      # TOTAL_PARTITIONS and guards each shard with a lease in valkey. Unlike
-      # ASSIGNED_PARTITIONS (still the fallback when ownership is off), this is a
-      # decision the application makes and the lease merely enforces.
-      INSTANCE_ID: "actors-0"
-      OWNERSHIP_MEMBERS: "actors-0,actors-1"
+      # Partition ownership. Each scaled replica uses its container HOSTNAME as
+      # INSTANCE_ID, registers a heartbeat in Valkey, and claims its rendezvous
+      # share of TOTAL_PARTITIONS guarded by per-partition Valkey leases.
+      OWNERSHIP_ENABLED: "true"
       OWNERSHIP_GROUP: "actors"
       VALKEY_URI: "redis://valkey:6379"
       LEASE_TTL_MS: "15000"
       DRAIN_TIMEOUT_MS: "20000"
-      TOTAL_PARTITIONS: "16"
+      TOTAL_PARTITIONS: "${TOTAL_PARTITIONS:-16}"
+      ACTORS_REPLICAS: "${ACTORS_REPLICAS:-3}"
       WORKER_COUNT: "4"
       # Batch/write policy. BATCH_SIZE is a floor that a busy precinct may not
       # reach; TICK_MIN_BATCH stops the periodic tick from manufacturing tiny
@@ -281,19 +199,18 @@ services:
       SNAPSHOT_EVERY_N: "2000"
       # Coalesce precinct->tally deltas at most every 200ms.
       TELL_INTERVAL_MS: "200"
-      # Even distribution: with 12 partitions over 2 instances, 6 each.
+      # Even distribution: derived automatically as ceil(TOTAL_PARTITIONS / ACTORS_REPLICAS)
+      # unless overridden by MAX_PARTITIONS_PER_INSTANCE.
       # A survivor may exceed this for the grace window (so a failure does not
       # leave shards unowned), then forgoes the excess; the hold-off stops a
       # forgoed partition bouncing straight back to the node that gave it up.
-      MAX_PARTITIONS_PER_INSTANCE: "8"
+      MAX_PARTITIONS_PER_INSTANCE: "${MAX_PARTITIONS_PER_INSTANCE:-}"
       LEADERSHIP_GRACE_MS: "60000"
       LEADERSHIP_HOLD_OFF_MS: "3000"
       OTEL_SERVICE_NAME: "election-actors"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
       JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
-    ports:
-      - "8081:8081"
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081"]
       interval: 2s
@@ -313,85 +230,13 @@ services:
       # fall back to ctimer/itimer, which under-samples worker threads.
       - PERFMON
     deploy:
+      replicas: ${ACTORS_REPLICAS:-3}
       resources:
         limits:
           cpus: "1.00"
           memory: 1536M
 
-  election-actors-2:
-    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system:${TAG:-latest}
-    environment:
-      ROLE: "actors"
-      METRICS_PORT: "8082"
-      ASYNC_PROXY_HOST: "async-proxy-egress"
-      ASYNC_PROXY_GRPC_PORT: "50052"
-      INSTANCE_ID: "actors-1"
-      OWNERSHIP_MEMBERS: "actors-0,actors-1"
-      OWNERSHIP_GROUP: "actors"
-      VALKEY_URI: "redis://valkey:6379"
-      LEASE_TTL_MS: "15000"
-      DRAIN_TIMEOUT_MS: "20000"
-      TOTAL_PARTITIONS: "16"
-      WORKER_COUNT: "4"
-      # Batch/write policy. BATCH_SIZE is a floor that a busy precinct may not
-      # reach; TICK_MIN_BATCH stops the periodic tick from manufacturing tiny
-      # batches (measured: 6.44 ballots per statement vs batch-size 50, i.e. 13%
-      # of intended size) and TICK_MAX_AGE_MS is the real staleness bound.
-      BATCH_SIZE: "200"
-      FLUSH_EVERY_N: "50"
-      TICK_INTERVAL_MS: "2000"
-      TICK_MIN_BATCH: "200"
-      TICK_MAX_AGE_MS: "10000"
-      ELECTION_ID: "national-2026"
-      DB_ENGINE: "postgres"
-      JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
-      DB_USER: "election"
-      DB_PASSWORD: "election"
-      DB_POOL_SIZE: "16"
-      # Snapshots are full-state writes on the same pool as the ballot batches;
-      # at every-500-messages they were the largest inline-effect tail measured
-      # (~9s p99). 2000 trades a little replay on restart for far fewer writes.
-      SNAPSHOT_EVERY_N: "2000"
-      # Coalesce precinct->tally deltas at most every 200ms.
-      TELL_INTERVAL_MS: "200"
-      # Even distribution: with 12 partitions over 2 instances, 6 each.
-      # A survivor may exceed this for the grace window (so a failure does not
-      # leave shards unowned), then forgoes the excess; the hold-off stops a
-      # forgoed partition bouncing straight back to the node that gave it up.
-      MAX_PARTITIONS_PER_INSTANCE: "8"
-      LEADERSHIP_GRACE_MS: "60000"
-      LEADERSHIP_HOLD_OFF_MS: "3000"
-      OTEL_SERVICE_NAME: "election-actors"
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
-      OTEL_SAMPLING_RATIO: "0.10"
-      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
-    ports:
-      - "8082:8082"
-    healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8082"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-    depends_on:
-      postgres:
-        condition: service_healthy
-      valkey:
-        condition: service_healthy
-      async-proxy-gateway:
-        condition: service_healthy
-    cap_add:
-      - SYS_PTRACE
-      # PERFMON is required for `asprof -e cpu` (perf_events sampling).
-      # Without it perf_event_open fails with EPERM and async-profiler has to
-      # fall back to ctimer/itimer, which under-samples worker threads.
-      - PERFMON
-    deploy:
-      resources:
-        limits:
-          cpus: "1.00"
-          memory: 1536M
-
-  election-api-1:
+  election-api-backend:
     image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system:${TAG:-latest}
     environment:
       ROLE: "api"
@@ -399,7 +244,7 @@ services:
       ASYNC_PROXY_HOST: "async-proxy-ingress"
       ASYNC_PROXY_GRPC_PORT: "50051"
       WORKER_COUNT: "8"
-      TOTAL_PARTITIONS: "16"
+      TOTAL_PARTITIONS: "${TOTAL_PARTITIONS:-16}"
       DB_ENGINE: "postgres"
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
       DB_USER: "election"
@@ -410,7 +255,7 @@ services:
       # postgres at 0.2% throttle -- i.e. requests queued for a thread, not for a
       # resource. Raised so the pool stops being the binding constraint.
       JETTY_MAX_THREADS: "400"
-      OTEL_SERVICE_NAME: "election-api-1"
+      OTEL_SERVICE_NAME: "election-api"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
       JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
@@ -424,9 +269,7 @@ services:
         condition: service_healthy
       async-proxy-gateway:
         condition: service_healthy
-      election-actors-1:
-        condition: service_healthy
-      election-actors-2:
+      election-actors:
         condition: service_healthy
     cap_add:
       - SYS_PTRACE
@@ -435,55 +278,7 @@ services:
       # fall back to ctimer/itimer, which under-samples worker threads.
       - PERFMON
     deploy:
-      resources:
-        limits:
-          cpus: "1.00"
-          memory: 1536M
-
-  election-api-2:
-    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system:${TAG:-latest}
-    environment:
-      ROLE: "api"
-      HTTP_PORT: "8080"
-      ASYNC_PROXY_HOST: "async-proxy-ingress"
-      ASYNC_PROXY_GRPC_PORT: "50051"
-      WORKER_COUNT: "8"
-      TOTAL_PARTITIONS: "16"
-      DB_ENGINE: "postgres"
-      JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
-      DB_USER: "election"
-      DB_PASSWORD: "election"
-      DB_POOL_SIZE: "8"
-      # Jetty request threads. At 120/node the API saturated with in-flight
-      # pinned at ~117/node (2 nodes => ~234 total) while CPU stayed at ~1% and
-      # postgres at 0.2% throttle -- i.e. requests queued for a thread, not for a
-      # resource. Raised so the pool stops being the binding constraint.
-      JETTY_MAX_THREADS: "400"
-      OTEL_SERVICE_NAME: "election-api-2"
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
-      OTEL_SAMPLING_RATIO: "0.10"
-      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
-    healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-    depends_on:
-      postgres:
-        condition: service_healthy
-      async-proxy-gateway:
-        condition: service_healthy
-      election-actors-1:
-        condition: service_healthy
-      election-actors-2:
-        condition: service_healthy
-    cap_add:
-      - SYS_PTRACE
-      # PERFMON is required for `asprof -e cpu` (perf_events sampling).
-      # Without it perf_event_open fails with EPERM and async-profiler has to
-      # fall back to ctimer/itimer, which under-samples worker threads.
-      - PERFMON
-    deploy:
+      replicas: ${API_REPLICAS:-3}
       resources:
         limits:
           cpus: "1.00"
@@ -508,9 +303,7 @@ services:
       timeout: 3s
       retries: 30
     depends_on:
-      election-api-1:
-        condition: service_healthy
-      election-api-2:
+      election-api-backend:
         condition: service_healthy
     deploy:
       resources:

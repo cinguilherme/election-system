@@ -26,7 +26,7 @@ groups:
             at least one shard is unowned. Messages keep accumulating in
             JetStream for it and no actor consumes them. Check which partitions
             are missing a lease and why the survivor has not claimed them:
-            `docker compose logs election-actors-1 election-actors-2 | grep "\[ownership\]"`.
+            `docker compose logs election-actors | grep "\[ownership\]"`.
 
       # A healthy assignment is roughly even. Losing the majority of partitions
       # to one node is survivable but leaves the cluster one failure away from
