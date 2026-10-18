@@ -67,7 +67,7 @@ services:
           memory: 512M
 
   async-proxy-1:
-    image: "${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-async-proxy-1:${TAG:-latest}"
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-async-proxy:${TAG:-latest}
     build:
       context: ..
       dockerfile: d-core-async-proxy/Dockerfile
@@ -110,10 +110,7 @@ services:
           memory: 1024M
 
   async-proxy-2:
-    image: "${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-async-proxy-2:${TAG:-latest}"
-    build:
-      context: ..
-      dockerfile: d-core-async-proxy/Dockerfile
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-async-proxy:${TAG:-latest}
     environment:
       PORT: "4000"
       GRPC_PORT: "50051"
@@ -151,10 +148,7 @@ services:
           memory: 1024M
 
   async-proxy-3:
-    image: "${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-async-proxy-3:${TAG:-latest}"
-    build:
-      context: ..
-      dockerfile: d-core-async-proxy/Dockerfile
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-async-proxy:${TAG:-latest}
     environment:
       PORT: "4000"
       GRPC_PORT: "50051"
@@ -229,7 +223,7 @@ services:
           - async-proxy-egress
 
   election-actors-1:
-    image: "${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-election-actors-1:${TAG:-latest}"
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system:${TAG:-latest}
     build:
       context: ..
       dockerfile: election-system/Dockerfile
@@ -309,10 +303,7 @@ services:
           memory: 1536M
 
   election-actors-2:
-    image: "${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-election-actors-2:${TAG:-latest}"
-    build:
-      context: ..
-      dockerfile: election-system/Dockerfile
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system:${TAG:-latest}
     environment:
       ROLE: "actors"
       METRICS_PORT: "8082"
@@ -385,10 +376,7 @@ services:
           memory: 1536M
 
   election-api-1:
-    image: "${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-election-api-1:${TAG:-latest}"
-    build:
-      context: ..
-      dockerfile: election-system/Dockerfile
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system:${TAG:-latest}
     environment:
       ROLE: "api"
       HTTP_PORT: "8080"
@@ -437,10 +425,7 @@ services:
           memory: 1536M
 
   election-api-2:
-    image: "${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-election-api-2:${TAG:-latest}"
-    build:
-      context: ..
-      dockerfile: election-system/Dockerfile
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system:${TAG:-latest}
     environment:
       ROLE: "api"
       HTTP_PORT: "8080"

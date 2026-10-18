@@ -267,40 +267,43 @@ registry:
 # EVERY service that has an `image:`, which includes nginx, nats, postgres,
 # jaeger, prometheus, grafana and cadvisor -- public images that must never be
 # pushed (and that fail anyway, since we cannot write to their registries).
-BUILT = async-proxy-1 async-proxy-2 async-proxy-3 \
-        election-actors-1 election-actors-2 \
-        election-api-1 election-api-2
+# ONE image per build, shared by every container that runs it. Two services own
+# a build and the rest just reference the image:
+#   async-proxy-1      builds election-system-async-proxy (proxies 1..3)
+#   election-actors-1  builds election-system            (ROLE selects api/actors)
+BUILT  = async-proxy-1 election-actors-1
+IMAGES = election-system-async-proxy election-system
 
 images:
 	$(COMPOSE) build $(BUILT)
-	@printf '\ntagged $(REGISTRY)/election-system-<service>:$(TAG)\n'
+	@printf '\ntagged $(REGISTRY)/<image>:$(TAG) for: $(IMAGES)\n'
 
 # Re-point images built under an older registry prefix (e.g. localhost:5001) at
 # the current one. The registry host is part of the image NAME, so changing the
 # address in .env orphans every image built before the change -- retagging is
 # local metadata only, no rebuild.
 retag:
-	@for s in $(BUILT); do \
-	  src=$$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E "/election-system-$$s:$(TAG)$$" | grep -v "^$(REGISTRY)/" | head -1); \
+	@for i in $(IMAGES); do \
+	  src=$$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E "/$$i:$(TAG)$$" | grep -v "^$(REGISTRY)/" | head -1); \
 	  if [ -n "$$src" ]; then \
-	    docker tag "$$src" "$(REGISTRY)/election-system-$$s:$(TAG)" && echo "  $$src -> $(REGISTRY)/election-system-$$s:$(TAG)"; \
+	    docker tag "$$src" "$(REGISTRY)/$$i:$(TAG)" && echo "  $$src -> $(REGISTRY)/$$i:$(TAG)"; \
 	  fi; \
 	done
 
 push:
-	@for s in $(BUILT); do \
-	  docker image inspect "$(REGISTRY)/election-system-$$s:$(TAG)" >/dev/null 2>&1 || { \
-	    echo "missing $(REGISTRY)/election-system-$$s:$(TAG) -- run 'make images' first"; exit 1; }; \
+	@for i in $(IMAGES); do \
+	  docker image inspect "$(REGISTRY)/$$i:$(TAG)" >/dev/null 2>&1 || { \
+	    echo "missing $(REGISTRY)/$$i:$(TAG) -- run 'make images' first"; exit 1; }; \
 	done
 	$(COMPOSE) push $(BUILT)
 	@# Also move `latest` to this build. Without a moving tag, a worker that does
 	@# not know the commit asks for the default tag and gets "manifest unknown" --
 	@# which looks like a registry/network failure but is just a missing tag.
-	@for s in $(BUILT); do \
-	  docker tag "$(REGISTRY)/election-system-$$s:$(TAG)" "$(REGISTRY)/election-system-$$s:latest"; \
-	  docker push -q "$(REGISTRY)/election-system-$$s:latest" >/dev/null; \
+	@for i in $(IMAGES); do \
+	  docker tag "$(REGISTRY)/$$i:$(TAG)" "$(REGISTRY)/$$i:latest"; \
+	  docker push -q "$(REGISTRY)/$$i:latest" >/dev/null; \
 	done
-	@printf 'pushed %s and latest for %d service(s)\n' "$(TAG)" $(words $(BUILT))
+	@printf 'pushed %s and latest for %d image(s)\n' "$(TAG)" $(words $(IMAGES))
 
 # On a worker: pull only what we built, then start. Public base images are pulled
 # by `up` itself.
