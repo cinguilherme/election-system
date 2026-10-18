@@ -42,6 +42,18 @@
         :flushes next-flushes}
        effects]))))
 
+(defn tally-view
+  "The read projection of a tally actor's state. Shared by the step handler and
+   the read lane's direct path so both answer identically."
+  [state]
+  {:election-id (:election-id state)
+   :tallies (:tallies state)
+   :precinct-totals (:precinct-totals state)
+   :precincts-reporting (count (:precinct-totals state))
+   :total-votes (:total-votes state)
+   :updates-received (:updates-received state)
+   :flushes (:flushes state)})
+
 (defn tally-step
   "Pure step function `(fn [state msg ctx] -> [next-state reply effects])` for `:election-tally`."
   [state msg ctx]
@@ -70,15 +82,7 @@
       (execute-tally-flush state (:fencing ctx))
 
       :get-tally
-      [state
-       {:election-id (:election-id state)
-        :tallies (:tallies state)
-        :precinct-totals (:precinct-totals state)
-        :precincts-reporting (count (:precinct-totals state))
-        :total-votes (:total-votes state)
-        :updates-received (:updates-received state)
-        :flushes (:flushes state)}
-       []]
+      [state (tally-view state) []]
 
       [state {:status :error :error (str "Unknown message type: " msg-type)} []])))
 

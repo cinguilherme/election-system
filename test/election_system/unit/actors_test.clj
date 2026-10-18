@@ -145,3 +145,26 @@
     (is (nil? (main/parse-partition-list "   ")))))
 
 
+
+(deftest precinct-coalesces-national-tally-tells
+  ;; Deltas accumulate between tells. The DB flush still happens on every flush;
+  ;; only the NATS tell is rate-limited -- and because the tally flushes every N
+  ;; tells, fewer tells means fewer, larger DB batches rather than more writes.
+  (let [now (System/currentTimeMillis)
+        base {:election-id "e1" :precinct-id "p1"
+              :tallies {:alice 5} :total-votes 5
+              :pending-ballots [{:ballot-id "b1"}]
+              :pending-deltas {:alice 5}
+              :last-sequence "s1"
+              :tell-interval-ms 60000
+              :last-tell-at now
+              :dirty? true :flushes 0}]
+    (let [[_ _ effects] (precinct/execute-flush-transition base false nil false)]
+      (is (not-any? #(= :tell (:type %)) effects)
+          "no tell while inside the coalescing interval"))
+    (let [[flushed _ effects] (precinct/execute-flush-transition
+                               (assoc base :last-tell-at (- now 120000)) false nil false)]
+      (is (= [{:alice 5}] (map #(-> % :message :deltas) (filter #(= :tell (:type %)) effects)))
+          "…but pending deltas are accumulated, not dropped: they ride the next tell")
+      (is (empty? (:pending-deltas flushed)) "deltas cleared once told"))
+))

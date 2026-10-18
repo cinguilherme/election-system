@@ -60,7 +60,7 @@ services:
           cpus: "0.75"
           memory: 512M
 
-  async-proxy-ingress:
+  async-proxy-1:
     build:
       context: ..
       dockerfile: d-core-async-proxy/Dockerfile
@@ -69,17 +69,21 @@ services:
       GRPC_PORT: "50051"
       BROKER_BACKEND: "jetstream"
       NATS_URL: "nats://nats:4222"
-      OTEL_SERVICE_NAME: "async-proxy-ingress"
+      OTEL_SERVICE_NAME: "async-proxy-1"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
-      # 75% of 1024 MiB leaves 256 MiB for metaspace/threads/direct buffers, but
-      # the measured non-heap footprint plus RSS headroom needs ~400 MiB -- the
-      # egress was OOM-killed (exit 137) with a 742 MiB heap max. 60% keeps the
-      # worst-case RSS under the cgroup limit.
+      # General purpose: the same gRPC service answers publish and subscribe, so
+      # every replica may serve either role -- and must therefore validate lease
+      # ownership. Fail-closed: if the lease store is unreachable the
+      # subscription is refused rather than two nodes consuming one partition.
+      LEASE_VALIDATION: "1"
+      OWNERSHIP_ASSIGNMENT: "external"
+      VALKEY_URI: "redis://valkey:6379"
+      # 60% keeps worst-case RSS under the cgroup limit (see the ingress/egress
+      # history: 75% of 1024 MiB left too little for non-heap and got OOM-killed).
       JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=60.0"
     ports:
       - "4000:4000"
-      - "50051:50051"
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4000 && exec 4<>/dev/tcp/127.0.0.1/50051"]
       interval: 2s
@@ -88,11 +92,10 @@ services:
     depends_on:
       - nats
       - jaeger
+      - valkey
     cap_add:
       - SYS_PTRACE
       # PERFMON is required for `asprof -e cpu` (perf_events sampling).
-      # Without it perf_event_open fails with EPERM and async-profiler has to
-      # fall back to ctimer/itimer, which under-samples worker threads.
       - PERFMON
     deploy:
       resources:
@@ -100,51 +103,123 @@ services:
           cpus: "1.00"
           memory: 1024M
 
-  async-proxy-egress:
+  async-proxy-2:
     build:
       context: ..
       dockerfile: d-core-async-proxy/Dockerfile
     environment:
-      PORT: "4001"
-      GRPC_PORT: "50052"
+      PORT: "4000"
+      GRPC_PORT: "50051"
       BROKER_BACKEND: "jetstream"
       NATS_URL: "nats://nats:4222"
-      OTEL_SERVICE_NAME: "async-proxy-egress"
+      OTEL_SERVICE_NAME: "async-proxy-2"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
-      # Partition ownership enforcement. The egress proxy validates the lease
-      # token a subscriber presents, refuses it if the token is not the current
-      # holder, and stamps the resulting epoch on every delivery. Fail-closed on
-      # purpose: if the lease store is unreachable the subscription is refused
-      # rather than two nodes consuming one partition.
+      # General purpose: the same gRPC service answers publish and subscribe, so
+      # every replica may serve either role -- and must therefore validate lease
+      # ownership. Fail-closed: if the lease store is unreachable the
+      # subscription is refused rather than two nodes consuming one partition.
       LEASE_VALIDATION: "1"
       OWNERSHIP_ASSIGNMENT: "external"
       VALKEY_URI: "redis://valkey:6379"
-      # See the ingress note: 75% of 1024 MiB leaves too little for non-heap.
+      # 60% keeps worst-case RSS under the cgroup limit (see the ingress/egress
+      # history: 75% of 1024 MiB left too little for non-heap and got OOM-killed).
       JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=60.0"
-    ports:
-      - "4001:4001"
-      - "50052:50052"
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4001 && exec 4<>/dev/tcp/127.0.0.1/50052"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4000 && exec 4<>/dev/tcp/127.0.0.1/50051"]
       interval: 2s
       timeout: 3s
       retries: 30
     depends_on:
       - nats
-      - valkey
       - jaeger
+      - valkey
     cap_add:
       - SYS_PTRACE
       # PERFMON is required for `asprof -e cpu` (perf_events sampling).
-      # Without it perf_event_open fails with EPERM and async-profiler has to
-      # fall back to ctimer/itimer, which under-samples worker threads.
       - PERFMON
     deploy:
       resources:
         limits:
           cpus: "1.00"
           memory: 1024M
+
+  async-proxy-3:
+    build:
+      context: ..
+      dockerfile: d-core-async-proxy/Dockerfile
+    environment:
+      PORT: "4000"
+      GRPC_PORT: "50051"
+      BROKER_BACKEND: "jetstream"
+      NATS_URL: "nats://nats:4222"
+      OTEL_SERVICE_NAME: "async-proxy-3"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
+      OTEL_SAMPLING_RATIO: "0.10"
+      # General purpose: the same gRPC service answers publish and subscribe, so
+      # every replica may serve either role -- and must therefore validate lease
+      # ownership. Fail-closed: if the lease store is unreachable the
+      # subscription is refused rather than two nodes consuming one partition.
+      LEASE_VALIDATION: "1"
+      OWNERSHIP_ASSIGNMENT: "external"
+      VALKEY_URI: "redis://valkey:6379"
+      # 60% keeps worst-case RSS under the cgroup limit (see the ingress/egress
+      # history: 75% of 1024 MiB left too little for non-heap and got OOM-killed).
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=60.0"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4000 && exec 4<>/dev/tcp/127.0.0.1/50051"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      - nats
+      - jaeger
+      - valkey
+    cap_add:
+      - SYS_PTRACE
+      # PERFMON is required for `asprof -e cpu` (perf_events sampling).
+      - PERFMON
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1024M
+
+  # One endpoint per client-facing port, N identical proxies behind it. Clients
+  # keep using the async-proxy-ingress / async-proxy-egress names -- the aliases
+  # below make them resolve here -- so replicating the data plane is invisible
+  # upstream. "Ingress" and "egress" exist only as two listeners on this
+  # container; the proxies themselves are general purpose.
+  async-proxy-gateway:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./observability/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "50051:50051"
+      - "50052:50052"
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      async-proxy-1:
+        condition: service_healthy
+      async-proxy-2:
+        condition: service_healthy
+      async-proxy-3:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          # The LB parses every unary publish (HTTP/2), so this is CPU, not bandwidth.
+          cpus: "2.00"
+          memory: 256M
+    networks:
+      default:
+        aliases:
+          - async-proxy-ingress
+          - async-proxy-egress
 
   election-actors-1:
     build:
@@ -165,7 +240,7 @@ services:
       VALKEY_URI: "redis://valkey:6379"
       LEASE_TTL_MS: "15000"
       DRAIN_TIMEOUT_MS: "20000"
-      TOTAL_PARTITIONS: "12"
+      TOTAL_PARTITIONS: "16"
       WORKER_COUNT: "4"
       # Batch/write policy. BATCH_SIZE is a floor that a busy precinct may not
       # reach; TICK_MIN_BATCH stops the periodic tick from manufacturing tiny
@@ -186,11 +261,13 @@ services:
       # at every-500-messages they were the largest inline-effect tail measured
       # (~9s p99). 2000 trades a little replay on restart for far fewer writes.
       SNAPSHOT_EVERY_N: "2000"
+      # Coalesce precinct->tally deltas at most every 200ms.
+      TELL_INTERVAL_MS: "200"
       # Even distribution: with 12 partitions over 2 instances, 6 each.
       # A survivor may exceed this for the grace window (so a failure does not
       # leave shards unowned), then forgoes the excess; the hold-off stops a
       # forgoed partition bouncing straight back to the node that gave it up.
-      MAX_PARTITIONS_PER_INSTANCE: "6"
+      MAX_PARTITIONS_PER_INSTANCE: "8"
       LEADERSHIP_GRACE_MS: "60000"
       LEADERSHIP_HOLD_OFF_MS: "3000"
       OTEL_SERVICE_NAME: "election-actors"
@@ -209,7 +286,7 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
-      async-proxy-egress:
+      async-proxy-gateway:
         condition: service_healthy
       jaeger:
         condition: service_started
@@ -222,7 +299,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.90"
+          cpus: "1.00"
           memory: 1536M
 
   election-actors-2:
@@ -240,7 +317,7 @@ services:
       VALKEY_URI: "redis://valkey:6379"
       LEASE_TTL_MS: "15000"
       DRAIN_TIMEOUT_MS: "20000"
-      TOTAL_PARTITIONS: "12"
+      TOTAL_PARTITIONS: "16"
       WORKER_COUNT: "4"
       # Batch/write policy. BATCH_SIZE is a floor that a busy precinct may not
       # reach; TICK_MIN_BATCH stops the periodic tick from manufacturing tiny
@@ -261,11 +338,13 @@ services:
       # at every-500-messages they were the largest inline-effect tail measured
       # (~9s p99). 2000 trades a little replay on restart for far fewer writes.
       SNAPSHOT_EVERY_N: "2000"
+      # Coalesce precinct->tally deltas at most every 200ms.
+      TELL_INTERVAL_MS: "200"
       # Even distribution: with 12 partitions over 2 instances, 6 each.
       # A survivor may exceed this for the grace window (so a failure does not
       # leave shards unowned), then forgoes the excess; the hold-off stops a
       # forgoed partition bouncing straight back to the node that gave it up.
-      MAX_PARTITIONS_PER_INSTANCE: "6"
+      MAX_PARTITIONS_PER_INSTANCE: "8"
       LEADERSHIP_GRACE_MS: "60000"
       LEADERSHIP_HOLD_OFF_MS: "3000"
       OTEL_SERVICE_NAME: "election-actors"
@@ -284,7 +363,7 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
-      async-proxy-egress:
+      async-proxy-gateway:
         condition: service_healthy
       jaeger:
         condition: service_started
@@ -297,7 +376,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.90"
+          cpus: "1.00"
           memory: 1536M
 
   election-api-1:
@@ -310,7 +389,7 @@ services:
       ASYNC_PROXY_HOST: "async-proxy-ingress"
       ASYNC_PROXY_GRPC_PORT: "50051"
       WORKER_COUNT: "8"
-      TOTAL_PARTITIONS: "12"
+      TOTAL_PARTITIONS: "16"
       DB_ENGINE: "postgres"
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
       DB_USER: "election"
@@ -333,7 +412,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      async-proxy-ingress:
+      async-proxy-gateway:
         condition: service_healthy
       election-actors-1:
         condition: service_healthy
@@ -363,7 +442,7 @@ services:
       ASYNC_PROXY_HOST: "async-proxy-ingress"
       ASYNC_PROXY_GRPC_PORT: "50051"
       WORKER_COUNT: "8"
-      TOTAL_PARTITIONS: "12"
+      TOTAL_PARTITIONS: "16"
       DB_ENGINE: "postgres"
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
       DB_USER: "election"
@@ -386,7 +465,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      async-proxy-ingress:
+      async-proxy-gateway:
         condition: service_healthy
       election-actors-1:
         condition: service_healthy
@@ -403,7 +482,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.90"
+          cpus: "1.00"
           memory: 1536M
 
   election-api:
@@ -426,8 +505,10 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.25"
-          memory: 128M
+          # Proxying is CPU, not bandwidth: 0.25 cores throttled this nginx
+          # permanently and capped the API tier regardless of backend capacity.
+          cpus: "2.00"
+          memory: 256M
 
   jaeger:
     image: jaegertracing/all-in-one:1.60
@@ -497,9 +578,7 @@ services:
         condition: service_healthy
       election-actors-2:
         condition: service_healthy
-      async-proxy-ingress:
-        condition: service_healthy
-      async-proxy-egress:
+      async-proxy-gateway:
         condition: service_healthy
 
   grafana:

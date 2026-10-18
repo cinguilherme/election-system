@@ -97,6 +97,12 @@
               msg (assoc vote :type :cast-vote)]
           (if async?
             (do
+              ;; Acknowledged publish, always. "Async" here means the *caller*
+              ;; does not wait for the actor's answer -- it does NOT mean the API
+              ;; may return 202 before the broker has secured the message. A 202
+              ;; without a publish ack would be a promise we cannot keep, and the
+              ;; measured cost of acking turned out to be none (p50 was identical
+              ;; with the ack disabled), so there is nothing to trade away.
               (actor/tell! actor-client :precinct actor-id msg {})
               (record-vote-metric! metrics votes-counter election-id candidate-id :async :accepted)
               (json-response {:status "accepted"

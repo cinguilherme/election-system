@@ -35,7 +35,7 @@ scrape_configs:
   - job_name: 'async-proxy-ingress'
     metrics_path: '/metrics'
     static_configs:
-      - targets: ['async-proxy-ingress:4000']
+      - targets: ['async-proxy-1:4000', 'async-proxy-2:4000', 'async-proxy-3:4000']
         labels:
           tier: 'proxy-ingress'
     relabel_configs:
@@ -47,7 +47,7 @@ scrape_configs:
   - job_name: 'async-proxy-egress'
     metrics_path: '/metrics'
     static_configs:
-      - targets: ['async-proxy-egress:4001']
+      - targets: ['async-proxy-1:4000', 'async-proxy-2:4000', 'async-proxy-3:4000']
         labels:
           tier: 'proxy-egress'
     relabel_configs:

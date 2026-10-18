@@ -67,6 +67,10 @@
      ;; Full-state snapshot every N messages per actor. Recovery state, not the
      ;; vote path; nil keeps each entity type's own default.
      :snapshot-every-n (env-long "SNAPSHOT_EVERY_N" nil)
+     ;; How often a precinct ships accumulated deltas to the national tally.
+     ;; These are NATS messages, not DB writes -- and because the tally flushes
+     ;; every N tells, coalescing reduces DB flushes too (fewer, larger batches).
+     :tell-interval-ms (env-long "TELL_INTERVAL_MS" 200)
      :ownership {:enabled? (and (some? instance-id)
                                 (env-bool "OWNERSHIP_ENABLED" true))
                  :group (env-str "OWNERSHIP_GROUP" "actors")

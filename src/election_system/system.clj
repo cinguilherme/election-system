@@ -27,6 +27,7 @@
             [d-core-async-proxy.subscriptions.registry :as reg]
             [election-system.actors.precinct :as precinct]
             [election-system.actors.tally :as tally]
+            [election-system.actors.tally :as tally]
             [election-system.api.routes :as routes]
             [election-system.db.schema :as schema]
             [election-system.db.writer :as writer]
@@ -38,7 +39,7 @@
 (defn make-entity-specs
   "Builds the `:precinct` and `:election-tally` entity behavior specifications."
   [{:keys [election-id opens-at closes-at batch-size flush-every-n tick-interval-ms
-           tick-min-batch tick-max-age-ms snapshot-every-n]}]
+           tick-min-batch tick-max-age-ms snapshot-every-n tell-interval-ms]}]
   ;; batch-size is a floor, not the target: a precinct only reaches it if it sees
   ;; enough votes. Under the load test each of ~250 precincts saw ~23 votes/s, so
   ;; the old batch-size 50 was unreachable and the 2s tick flushed ~6-ballot
@@ -52,7 +53,8 @@
                        :batch-size (or batch-size 200)
                        :tick-min-batch (or tick-min-batch (or batch-size 200))
                        :tick-max-age-ms (or tick-max-age-ms 10000)
-                       :tick-interval-ms tick-interval-ms}
+                       :tick-interval-ms tick-interval-ms
+                       :tell-interval-ms tell-interval-ms}
                 ;; Snapshots are recovery state, not the vote path: every one is
                 ;; a full-state write through the same connection pool as the
                 ;; batches, and measured p99 was ~9s under load. Sparser
@@ -239,15 +241,38 @@
    Reads must not share the ballot lane: they queue behind its backlog and are
    blocked when its queue fills. Same leases, same fencing, different durable."
   [transport runtime entities partition partitions]
-  (mapv (fn [[entity-type _]]
-          (actor-p/subscribe-entities!
-           transport entity-type
-           (fn [etype eid env]
-             (engine/dispatch-envelope! (:engine runtime) etype eid env))
-           {:partition partition
-            :partitions partitions
-            :topic-suffix ".read"}))
-        entities))
+  (let [engine (:engine runtime)
+        ;; Reads are answered from the actor's committed state, without entering
+        ;; its mailbox. That is the whole point of the lane: the mailbox is
+        ;; serialized, so a read queued behind a burst of tells waited seconds
+        ;; for an answer the actor already had in memory.
+        ;;
+        ;; `peek-state` deliberately does not activate: if the entity is not
+        ;; loaded we fall through to the mailbox path, which loads it (and is
+        ;; slow, but correct -- and rare).
+        ]
+    (mapv (fn [[entity-type _]]
+            (actor-p/subscribe-entities!
+             transport entity-type
+             (fn [etype eid env]
+               (let [msg-type (keyword (or (get-in env [:payload :type])
+                                           (:type env)
+                                           :none))
+                     reply-fn (:reply-fn env)
+                     state (when (and (= :get-tally msg-type) reply-fn)
+                             (engine/peek-state engine etype eid))]
+                 (if state
+                   ;; Answer immediately from memory; no mailbox, no queue.
+                   (do (reply-fn (case (keyword etype)
+                                   :precinct (precinct/tally-view state)
+                                   :election-tally (tally/tally-view state)
+                                   (precinct/tally-view state)))
+                       nil)
+                   (engine/dispatch-envelope! engine etype eid env))))
+             {:partition partition
+              :partitions partitions
+              :topic-suffix ".read"}))
+          entities)))
 
 (defn start-actors-node
   "Starts a dedicated Election Actors container node hosting sharded actor
@@ -255,7 +280,8 @@
    exposing `/metrics` on `metrics-port`."
   [{:keys [metrics-port proxy-host proxy-grpc-port worker-count batch-size flush-every-n
            tick-interval-ms tick-min-batch tick-max-age-ms election-id opens-at closes-at db-opts
-           assigned-partitions total-partitions ownership drain-timeout-ms snapshot-every-n]
+           assigned-partitions total-partitions ownership drain-timeout-ms snapshot-every-n
+           tell-interval-ms]
     :or {metrics-port 8081
          proxy-host "localhost"
          proxy-grpc-port 50051
@@ -280,7 +306,8 @@
                                      :tick-min-batch (or tick-min-batch batch-size)
                                      :tick-max-age-ms (or tick-max-age-ms 10000)
                                      :tick-interval-ms tick-interval-ms
-                                     :snapshot-every-n snapshot-every-n})
+                                     :snapshot-every-n snapshot-every-n
+                                     :tell-interval-ms tell-interval-ms})
         ;; Runtime lifecycle for one partition. Used by the ownership manager when
         ;; leases are enabled, and directly by the static path when they are not.
         start-partition!

@@ -12,7 +12,7 @@
   ([precinct-id]
    (init-precinct-state precinct-id {}))
   ([precinct-id {:keys [election-id opens-at closes-at batch-size tick-min-batch
-                        tick-interval-ms tick-max-age-ms]}]
+                        tick-interval-ms tick-max-age-ms tell-interval-ms]}]
    (let [parsed (domain/parse-precinct-actor-id precinct-id election-id)]
      {:precinct-id (:precinct-id parsed)
       :election-id (:election-id parsed)
@@ -32,6 +32,13 @@
       :rejected-window 0
       :pending-ballots []
       :pending-deltas {}
+      ;; Deltas for the national tally are coalesced: accumulating them and
+      ;; telling at most every `tell-interval-ms` cuts the tally actor's inbox
+      ;; pressure by an order of magnitude. Those are NATS messages, not DB
+      ;; writes -- and since the tally flushes every N tells, fewer tells means
+      ;; FEWER, LARGER DB flushes, not more.
+      :last-tell-at 0
+      :tell-interval-ms (long (or tell-interval-ms 200))
       :dirty? false
       :flushes 0
       :last-sequence nil})))
@@ -46,14 +53,23 @@
    exactly 1:1 with ballot batches, and ~52% of all SQL statements under load.
    The batch-triggered flush passes false; explicit/tick flushes still write it
    so the DB retains a periodic tally checkpoint."
-  ([state] (execute-flush-transition state true nil))
-  ([state write-tally?] (execute-flush-transition state write-tally? nil))
-  ([state write-tally? fencing]
+  ([state] (execute-flush-transition state true nil false))
+  ([state write-tally?] (execute-flush-transition state write-tally? nil false))
+  ([state write-tally? fencing] (execute-flush-transition state write-tally? fencing false))
+  ([state write-tally? fencing force-tell?]
    (if-not (or (:dirty? state) (seq (:pending-ballots state)) (seq (:pending-deltas state)))
     [state {:status :noop :flushes (:flushes state)} []]
-    (let [next-flushes (inc (long (or (:flushes state) 0)))
+    (let [now (System/currentTimeMillis)
+          next-flushes (inc (long (or (:flushes state) 0)))
           ballots (:pending-ballots state)
           deltas (:pending-deltas state)
+          ;; Send the accumulated deltas only when the interval has elapsed (or
+          ;; when an explicit flush/passivation forces it). Until then they stay
+          ;; in `:pending-deltas` and ride along with the next tell.
+          tell? (and (seq deltas)
+                     (or force-tell?
+                         (>= (- now (long (or (:last-tell-at state) 0)))
+                             (long (or (:tell-interval-ms state) 200)))))
           election-id (:election-id state)
           precinct-id (:precinct-id state)
           effects (cond-> [(cond-> {:type :db/flush-precinct
@@ -70,7 +86,7 @@
                              write-tally?
                              (assoc :tallies (:tallies state)
                                     :total-votes (:total-votes state)))]
-                    (seq deltas)
+                    tell?
                     (conj {:type :tell
                            :entity-type :election-tally
                            :entity-id election-id
@@ -82,7 +98,8 @@
                                      :flushes next-flushes}}))
           flushed-state (assoc state
                                :pending-ballots []
-                               :pending-deltas {}
+                               :pending-deltas (if tell? {} deltas)
+                               :last-tell-at (if tell? now (:last-tell-at state))
                                :dirty? false
                                :flushes next-flushes
                                :last-flush-at (System/currentTimeMillis))]
@@ -152,6 +169,26 @@
                 [flushed-state (assoc reply :flushed? true) effects])
               [updated reply []])))))))
 
+(defn tally-view
+  "The tally projection of a precinct's state.
+
+   Shared by the step handler and the read lane's direct path, so both answer
+   with exactly the same shape -- a divergence here would surface as fields that
+   appear or vanish depending on which path served the read."
+  [state]
+  {:precinct-id (:precinct-id state)
+   :election-id (:election-id state)
+   :tallies (:tallies state)
+   :total-votes (:total-votes state)
+   :rejected-duplicates (:rejected-duplicates state)
+   :rejected-window (:rejected-window state)
+   :pending-ballots-count (count (:pending-ballots state))
+   :flushes (:flushes state)
+   ;; Eventual-consistency marker: this reply may exclude ballots still in the
+   ;; queue. A client can compare last-sequence across polls instead of assuming
+   ;; monotonic totals.
+   :last-sequence (:last-sequence state)})
+
 (defn precinct-step
   "Pure step function `(fn [state msg ctx] -> [next-state reply effects])` for `:precinct`."
   [state msg ctx]
@@ -175,7 +212,7 @@
       (handle-cast-vote state msg ctx)
 
       :flush
-      (execute-flush-transition state true (:fencing ctx))
+      (execute-flush-transition state true (:fencing ctx) true)
 
       :tick
       ;; The tick used to flush unconditionally every tick-interval-ms, which at
@@ -199,20 +236,7 @@
           [state {:status :deferred :pending-ballots pending} []]))
 
       :get-tally
-      [state
-       {:precinct-id (:precinct-id state)
-        :election-id (:election-id state)
-        :tallies (:tallies state)
-        :total-votes (:total-votes state)
-        :rejected-duplicates (:rejected-duplicates state)
-        :rejected-window (:rejected-window state)
-        :pending-ballots-count (count (:pending-ballots state))
-        :flushes (:flushes state)
-        ;; Eventual-consistency marker: this reply may exclude ballots still in
-        ;; the queue. A client can compare last-sequence across polls instead of
-        ;; assuming monotonic totals.
-        :last-sequence (:last-sequence state)}
-       []]
+      [state (tally-view state) []]
 
       [state {:status :error :error (str "Unknown message type: " msg-type)} []])))
 
