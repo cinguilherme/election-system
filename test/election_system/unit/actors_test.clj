@@ -64,10 +64,15 @@
                 (is (= 2 (:total-votes s4)))
                 (is (= {:alice 1 :bob 1} (:tallies s4)))
                 (is (empty? (:pending-ballots s4)))
-                (is (= 3 (count eff4)))
+                (is (= 2 (count eff4)))
                 (is (= :db/flush-precinct (:type (first eff4))))
                 (is (= 2 (count (:ballots (first eff4)))))
                 (is (= :tell (:type (second eff4))))
+                ;; No :snapshot on flush: recovery state is checkpointed every
+                ;; `snapshot-every-n` messages and on passivation. A full-state
+                ;; write per batch was the largest inline effect measured under
+                ;; load and it blocked the actor loop for seconds.
+                (is (not-any? #(= :snapshot (:type %)) eff4))
                 (is (= {:alice 1 :bob 1} (get-in (second eff4) [:message :deltas])))
 
                 ;; 5. Advance clock to 20:00:01Z (polls closed) -> rejected (:election-closed)

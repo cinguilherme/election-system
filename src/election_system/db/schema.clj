@@ -1,7 +1,8 @@
 (ns election-system.db.schema
   "Database schema definitions and Track 08 temporal storage-schema configuration
    for SQLite, PostgreSQL, and MySQL."
-  (:require [d-core.core.databases.protocols.simple-sql :as sql]))
+  (:require [clojure.string :as str]
+            [d-core.core.databases.protocols.simple-sql :as sql]))
 
 (def storage-schema
   {:tables
@@ -126,6 +127,45 @@
         PRIMARY KEY (entity_type, entity_id)
       )"]))
 
+(def ^:private ownership-column
+  "The fencing epoch on the two overwrite-in-place tables.
+
+   Added by migration rather than in the CREATE TABLE, so a fresh database and an
+   existing one take exactly the same path. Ballots do not need it: they are
+   insert-only with `:on-conflict :ignore`, so a stale re-flush is already a
+   no-op. The tally snapshots are overwrites, which is where a former owner could
+   otherwise clobber the current one."
+  "ownership_epoch BIGINT NOT NULL DEFAULT 0")
+
+(defn- migrations-for-engine
+  [engine]
+  (mapv (fn [table]
+          (if (= :postgres engine)
+            (str "ALTER TABLE " table " ADD COLUMN IF NOT EXISTS " ownership-column)
+            (str "ALTER TABLE " table " ADD COLUMN " ownership-column)))
+        ["precinct_tallies" "election_tallies"]))
+
+(defn- column-already-there?
+  [e]
+  (let [m (str/lower-case (str (ex-message e)))]
+    (or (str/includes? m "duplicate column")
+        (str/includes? m "already exists"))))
+
+(defn migrate!
+  "Idempotent column additions.
+
+   A failure that is not 'the column is already there' is rethrown: quietly
+   skipping it would leave writes unguarded while everything still looked
+   healthy, which is precisely the failure the column exists to prevent."
+  [db engine]
+  (doseq [stmt (migrations-for-engine engine)]
+    (try
+      (sql/execute! db [stmt] {})
+      (catch Exception e
+        (when-not (column-already-there? e)
+          (throw e)))))
+  true)
+
 (defn create-tables!
   "Executes DDL to initialize election tables on `db` for `engine` (`:sqlite`, `:postgres`, `:mysql`)."
   ([db]
@@ -133,4 +173,5 @@
   ([db engine]
    (doseq [stmt (ddl-for-engine engine)]
      (sql/execute! db [stmt] {}))
+   (migrate! db engine)
    true))

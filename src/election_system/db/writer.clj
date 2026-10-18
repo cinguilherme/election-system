@@ -69,16 +69,25 @@
   ([db metrics-atom effect]
    (flush-precinct-to-db! db metrics-atom nil nil effect))
   ([db metrics-atom prom-metrics sql-inst
-    {:keys [election-id precinct-id ballots tallies total-votes flushes last-sequence]}]
+    {:keys [election-id precinct-id ballots tallies total-votes flushes last-sequence fencing]}]
    (let [now-inst (time/now)
          norm-ballots (mapv normalize-ballot-row ballots)
          ballot-count (count norm-ballots)
          ballot-opts (merge {:table :ballots
                              :on-conflict :ignore}
                             (instant-temporal-opts db :cast_at))
+         ;; Fenced write: apply only if this epoch is newer than the stored one,
+         ;; so a former owner cannot overwrite the current owner's snapshot.
+         ;; Absent fencing means ownership is not enforced (in-memory transport,
+         ;; or a deployment without leases) and must keep the old unguarded
+         ;; behaviour -- sending 0 instead would make an unfenced deployment stop
+         ;; updating tallies as soon as any epoch was stored.
+         fenced? (some? fencing)
          tally-opts (merge {:table :precinct_tallies
                             :conflict-columns [:election_id :precinct_id]}
-                           (instant-temporal-opts db :updated_at))]
+                           (instant-temporal-opts db :updated_at)
+                           (when fenced?
+                             {:conflict-where "ownership_epoch < EXCLUDED.ownership_epoch"}))]
      (when (seq norm-ballots)
        (execute-with-sql-metrics
         prom-metrics sql-inst
@@ -96,13 +105,14 @@
         prom-metrics sql-inst
         {:table :precinct_tallies :operation :upsert :rows 1}
         #(sql/upsert! db
-                      {:election_id (str election-id)
-                       :precinct_id (str precinct-id)
-                       :tallies_json (json/generate-string (or tallies {}))
-                       :total_votes (long (or total-votes 0))
-                       :flushes (long (or flushes 0))
-                       :last_sequence (some-> last-sequence str)
-                       :updated_at now-inst}
+                      (cond-> {:election_id (str election-id)
+                               :precinct_id (str precinct-id)
+                               :tallies_json (json/generate-string (or tallies {}))
+                               :total_votes (long (or total-votes 0))
+                               :flushes (long (or flushes 0))
+                               :last_sequence (some-> last-sequence str)
+                               :updated_at now-inst}
+                        fenced? (assoc :ownership_epoch (long fencing)))
                       tally-opts))
        (record-metric! metrics-atom :precinct-upserts-count 1)))))
 
@@ -111,21 +121,27 @@
   ([db metrics-atom effect]
    (flush-election-tally-to-db! db metrics-atom nil nil effect))
   ([db metrics-atom prom-metrics sql-inst
-    {:keys [election-id tallies precinct-totals total-votes flushes]}]
+    {:keys [election-id tallies precinct-totals total-votes flushes fencing]}]
    (let [now-inst (time/now)
+         ;; Same fence as the precinct snapshot: the national row is also an
+         ;; overwrite, so an evicted owner's late flush must not win.
+         fenced? (some? fencing)
          tally-opts (merge {:table :election_tallies
                             :conflict-columns [:election_id]}
-                           (instant-temporal-opts db :updated_at))]
+                           (instant-temporal-opts db :updated_at)
+                           (when fenced?
+                             {:conflict-where "ownership_epoch < EXCLUDED.ownership_epoch"}))]
      (execute-with-sql-metrics
       prom-metrics sql-inst
       {:table :election_tallies :operation :upsert :rows 1}
       #(sql/upsert! db
-                    {:election_id (str election-id)
-                     :tallies_json (json/generate-string (or tallies {}))
-                     :precincts_reporting (long (count (or precinct-totals {})))
-                     :total_votes (long (or total-votes 0))
-                     :flushes (long (or flushes 0))
-                     :updated_at now-inst}
+                    (cond-> {:election_id (str election-id)
+                             :tallies_json (json/generate-string (or tallies {}))
+                             :precincts_reporting (long (count (or precinct-totals {})))
+                             :total_votes (long (or total-votes 0))
+                             :flushes (long (or flushes 0))
+                             :updated_at now-inst}
+                      fenced? (assoc :ownership_epoch (long fencing)))
                     tally-opts))
      (record-metric! metrics-atom :election-upserts-count 1))))
 

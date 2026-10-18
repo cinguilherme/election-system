@@ -13,6 +13,7 @@ COPY d-core-async-messaging/deps.edn /workspace/d-core-async-messaging/deps.edn
 COPY d-core-grpc/deps.edn /workspace/d-core-grpc/deps.edn
 COPY d-core-async-proxy/deps.edn /workspace/d-core-async-proxy/deps.edn
 COPY d-core-actor-system/deps.edn /workspace/d-core-actor-system/deps.edn
+COPY d-core-leader-election/deps.edn /workspace/d-core-leader-election/deps.edn
 COPY election-system/deps.edn /workspace/election-system/deps.edn
 
 WORKDIR /workspace/election-system
@@ -30,6 +31,7 @@ COPY d-core-async-messaging /workspace/d-core-async-messaging
 COPY d-core-grpc /workspace/d-core-grpc
 COPY d-core-async-proxy /workspace/d-core-async-proxy
 COPY d-core-actor-system /workspace/d-core-actor-system
+COPY d-core-leader-election /workspace/d-core-leader-election
 COPY election-system /workspace/election-system
 
 ENV ROLE=api

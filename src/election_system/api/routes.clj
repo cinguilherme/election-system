@@ -163,7 +163,13 @@
                                    :precinct
                                    actor-id
                                    {:type :get-tally}
-                                   {:timeout-ms (or timeout-ms 5000)})]
+                                   ;; Reads travel on their own lane so they do
+                                   ;; not queue behind the ballot backlog. The
+                                   ;; answer can therefore lag the newest
+                                   ;; ballots: this endpoint is eventually
+                                   ;; consistent under load by design.
+                                   {:timeout-ms (or timeout-ms 5000)
+                                    :topic-suffix ".read"})]
           (json-response res 200))
         (json-response (if db
                          (get-cached-precinct-tally db election-id precinct-id 500)
@@ -199,7 +205,8 @@
                                    :election-tally
                                    election-id
                                    {:type :get-tally}
-                                   {:timeout-ms (or timeout-ms 5000)})]
+                                   {:timeout-ms (or timeout-ms 5000)
+                                    :topic-suffix ".read"})]
           (json-response res 200))
         (json-response (if db
                          (get-cached-election-tally db election-id 500)

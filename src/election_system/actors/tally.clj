@@ -19,28 +19,32 @@
     :flushes 0}))
 
 (defn execute-tally-flush
-  [state]
+  ([state] (execute-tally-flush state nil))
+  ([state fencing]
   (if-not (:dirty? state)
     [state {:status :noop :flushes (:flushes state)} []]
     (let [next-flushes (inc (long (or (:flushes state) 0)))
           flushed (assoc state :dirty? false :flushes next-flushes)
-          effects [{:type :db/flush-election-tally
-                    :election-id (:election-id flushed)
-                    :tallies (:tallies flushed)
-                    :precinct-totals (:precinct-totals flushed)
-                    :total-votes (:total-votes flushed)
-                    :flushes next-flushes}
-                   {:type :snapshot}]]
+          effects [(cond-> {:type :db/flush-election-tally
+                            :election-id (:election-id flushed)
+                            :tallies (:tallies flushed)
+                            :precinct-totals (:precinct-totals flushed)
+                            :total-votes (:total-votes flushed)
+                            :flushes next-flushes}
+                     ;; Fencing epoch of the delivery that triggered this flush,
+                     ;; so the national tally upsert can refuse a stale write.
+                     ;; Absent when ownership is not enforced.
+                     (some? fencing) (assoc :fencing fencing))]]
       [flushed
        {:status :flushed
         :election-id (:election-id flushed)
         :total-votes (:total-votes flushed)
         :flushes next-flushes}
-       effects])))
+       effects]))))
 
 (defn tally-step
   "Pure step function `(fn [state msg ctx] -> [next-state reply effects])` for `:election-tally`."
-  [state msg _ctx]
+  [state msg ctx]
   (let [msg-type (or (:type msg) (:op msg))]
     (case msg-type
       :precinct-delta
@@ -58,12 +62,12 @@
                         (assoc-in [:precinct-totals precinct-id] precinct-total))
             flush-every (long (or (:flush-every-n updated) 10))]
         (if (zero? (mod new-updates flush-every))
-          (let [[flushed-state _r effects] (execute-tally-flush updated)]
+          (let [[flushed-state _r effects] (execute-tally-flush updated (:fencing ctx))]
             [flushed-state {:status :updated :total-votes new-total :flushed? true} effects])
           [updated {:status :updated :total-votes new-total} []]))
 
       (:tick :flush)
-      (execute-tally-flush state)
+      (execute-tally-flush state (:fencing ctx))
 
       :get-tally
       [state

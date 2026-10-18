@@ -308,15 +308,26 @@
     },
     {
       "id": 12,
-      "title": "SQL Statement Latency p95 (Constrained Postgres: 0.5 CPU / 4 Conn Pool)",
+      "title": "SQL Statement Latency p50 / p95 / p99 (Constrained Postgres: 0.5 CPU / 4 Conn Pool)",
+      "description": "The tail is the interesting part here: a flush that waits seconds for a DB connection blocks its actor loop, and any read queued behind it waits too.",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
       "targets": [
         {
+          "expr": "histogram_quantile(0.50, sum by (le, table, operation) (rate(sql_operation_duration_seconds_bucket[30s])))",
+          "legendFormat": "p50 {{table}}:{{operation}}",
+          "refId": "A"
+        },
+        {
           "expr": "histogram_quantile(0.95, sum by (le, table, operation) (rate(sql_operation_duration_seconds_bucket[30s])))",
           "legendFormat": "p95 {{table}}:{{operation}}",
-          "refId": "A"
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, table, operation) (rate(sql_operation_duration_seconds_bucket[30s])))",
+          "legendFormat": "p99 {{table}}:{{operation}}",
+          "refId": "C"
         }
       ],
       "fieldConfig": {
@@ -400,6 +411,100 @@
           }
         }
       }
+    },
+    {
+      "id": 15,
+      "title": "Partition Ownership: Leaders vs Partitions",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 44 },
+      "targets": [
+        {
+          "expr": "sum(election_leaders_held)",
+          "legendFormat": "leaders held",
+          "refId": "A"
+        },
+        {
+          "expr": "max(election_partitions_total)",
+          "legendFormat": "partitions",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" }
+    },
+    {
+      "id": 16,
+      "title": "Unowned Partitions",
+      "description": "leaders - partitions. Anything above zero means some shard has no owner: its backlog grows and nothing consumes it.",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 44 },
+      "targets": [
+        {
+          "expr": "(max(election_partitions_total) or vector(0)) - (sum(election_leaders_held) or vector(0))",
+          "legendFormat": "unowned",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" }
+    },
+    {
+      "id": 17,
+      "title": "Leaders Held per Actor Node vs Total Partitions",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 44 },
+      "targets": [
+        {
+          "expr": "election_leaders_held",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        },
+        {
+          "expr": "max(election_partitions_total)",
+          "legendFormat": "total partitions",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 18,
+      "title": "Actor Nodes Holding Leases",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 52 },
+      "targets": [
+        {
+          "expr": "count(election_leaders_held)",
+          "legendFormat": "nodes",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
     }
   ],
   "refresh": "5s",

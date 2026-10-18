@@ -6,6 +6,41 @@ services:
       - "4222:4222"
       - "8222:8222"
 
+  # Partition ownership leases.
+  #
+  # Small on purpose: it holds one short-TTL key per partition and nothing else.
+  # Two flags are not defaults and must stay:
+  #   --maxmemory-policy noeviction : the fencing counter must never be evicted.
+  #     Evicting it would let the epoch regress, so a stale owner could pass the
+  #     fence check and overwrite the current owner's state.
+  #   --appendonly yes              : so a restart does not reset the same counter.
+  # Combined with a named volume, the epoch survives both a valkey restart and a
+  # redeploy.
+  valkey:
+    image: valkey/valkey:8-alpine
+    command:
+      - valkey-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 64mb
+      - --maxmemory-policy
+      - noeviction
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    deploy:
+      resources:
+        limits:
+          cpus: "0.15"
+          memory: 128M
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -77,6 +112,14 @@ services:
       OTEL_SERVICE_NAME: "async-proxy-egress"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
+      # Partition ownership enforcement. The egress proxy validates the lease
+      # token a subscriber presents, refuses it if the token is not the current
+      # holder, and stamps the resulting epoch on every delivery. Fail-closed on
+      # purpose: if the lease store is unreachable the subscription is refused
+      # rather than two nodes consuming one partition.
+      LEASE_VALIDATION: "1"
+      OWNERSHIP_ASSIGNMENT: "external"
+      VALKEY_URI: "redis://valkey:6379"
       # See the ingress note: 75% of 1024 MiB leaves too little for non-heap.
       JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=60.0"
     ports:
@@ -89,6 +132,7 @@ services:
       retries: 30
     depends_on:
       - nats
+      - valkey
       - jaeger
     cap_add:
       - SYS_PTRACE
@@ -111,8 +155,17 @@ services:
       METRICS_PORT: "8081"
       ASYNC_PROXY_HOST: "async-proxy-egress"
       ASYNC_PROXY_GRPC_PORT: "50052"
-      ASSIGNED_PARTITIONS: "0,1,2,3"
-      TOTAL_PARTITIONS: "8"
+      # Partition ownership. The node claims its rendezvous share of
+      # TOTAL_PARTITIONS and guards each shard with a lease in valkey. Unlike
+      # ASSIGNED_PARTITIONS (still the fallback when ownership is off), this is a
+      # decision the application makes and the lease merely enforces.
+      INSTANCE_ID: "actors-0"
+      OWNERSHIP_MEMBERS: "actors-0,actors-1"
+      OWNERSHIP_GROUP: "actors"
+      VALKEY_URI: "redis://valkey:6379"
+      LEASE_TTL_MS: "15000"
+      DRAIN_TIMEOUT_MS: "20000"
+      TOTAL_PARTITIONS: "12"
       WORKER_COUNT: "4"
       # Batch/write policy. BATCH_SIZE is a floor that a busy precinct may not
       # reach; TICK_MIN_BATCH stops the periodic tick from manufacturing tiny
@@ -128,7 +181,18 @@ services:
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
       DB_USER: "election"
       DB_PASSWORD: "election"
-      DB_POOL_SIZE: "4"
+      DB_POOL_SIZE: "16"
+      # Snapshots are full-state writes on the same pool as the ballot batches;
+      # at every-500-messages they were the largest inline-effect tail measured
+      # (~9s p99). 2000 trades a little replay on restart for far fewer writes.
+      SNAPSHOT_EVERY_N: "2000"
+      # Even distribution: with 12 partitions over 2 instances, 6 each.
+      # A survivor may exceed this for the grace window (so a failure does not
+      # leave shards unowned), then forgoes the excess; the hold-off stops a
+      # forgoed partition bouncing straight back to the node that gave it up.
+      MAX_PARTITIONS_PER_INSTANCE: "6"
+      LEADERSHIP_GRACE_MS: "60000"
+      LEADERSHIP_HOLD_OFF_MS: "3000"
       OTEL_SERVICE_NAME: "election-actors"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
@@ -142,6 +206,8 @@ services:
       retries: 30
     depends_on:
       postgres:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
       async-proxy-egress:
         condition: service_healthy
@@ -168,8 +234,13 @@ services:
       METRICS_PORT: "8082"
       ASYNC_PROXY_HOST: "async-proxy-egress"
       ASYNC_PROXY_GRPC_PORT: "50052"
-      ASSIGNED_PARTITIONS: "4,5,6,7"
-      TOTAL_PARTITIONS: "8"
+      INSTANCE_ID: "actors-1"
+      OWNERSHIP_MEMBERS: "actors-0,actors-1"
+      OWNERSHIP_GROUP: "actors"
+      VALKEY_URI: "redis://valkey:6379"
+      LEASE_TTL_MS: "15000"
+      DRAIN_TIMEOUT_MS: "20000"
+      TOTAL_PARTITIONS: "12"
       WORKER_COUNT: "4"
       # Batch/write policy. BATCH_SIZE is a floor that a busy precinct may not
       # reach; TICK_MIN_BATCH stops the periodic tick from manufacturing tiny
@@ -185,7 +256,18 @@ services:
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
       DB_USER: "election"
       DB_PASSWORD: "election"
-      DB_POOL_SIZE: "4"
+      DB_POOL_SIZE: "16"
+      # Snapshots are full-state writes on the same pool as the ballot batches;
+      # at every-500-messages they were the largest inline-effect tail measured
+      # (~9s p99). 2000 trades a little replay on restart for far fewer writes.
+      SNAPSHOT_EVERY_N: "2000"
+      # Even distribution: with 12 partitions over 2 instances, 6 each.
+      # A survivor may exceed this for the grace window (so a failure does not
+      # leave shards unowned), then forgoes the excess; the hold-off stops a
+      # forgoed partition bouncing straight back to the node that gave it up.
+      MAX_PARTITIONS_PER_INSTANCE: "6"
+      LEADERSHIP_GRACE_MS: "60000"
+      LEADERSHIP_HOLD_OFF_MS: "3000"
       OTEL_SERVICE_NAME: "election-actors"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "0.10"
@@ -199,6 +281,8 @@ services:
       retries: 30
     depends_on:
       postgres:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
       async-proxy-egress:
         condition: service_healthy
@@ -226,7 +310,7 @@ services:
       ASYNC_PROXY_HOST: "async-proxy-ingress"
       ASYNC_PROXY_GRPC_PORT: "50051"
       WORKER_COUNT: "8"
-      TOTAL_PARTITIONS: "8"
+      TOTAL_PARTITIONS: "12"
       DB_ENGINE: "postgres"
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
       DB_USER: "election"
@@ -279,7 +363,7 @@ services:
       ASYNC_PROXY_HOST: "async-proxy-ingress"
       ASYNC_PROXY_GRPC_PORT: "50051"
       WORKER_COUNT: "8"
-      TOTAL_PARTITIONS: "8"
+      TOTAL_PARTITIONS: "12"
       DB_ENGINE: "postgres"
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
       DB_USER: "election"
@@ -489,3 +573,8 @@ services:
     depends_on:
       election-api:
         condition: service_healthy
+
+volumes:
+  # Holds the fencing counters. Losing this volume does not lose votes, it loses
+  # the monotonicity that makes stale writes detectable -- so it is persisted.
+  valkey-data:

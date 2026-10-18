@@ -46,8 +46,9 @@
    exactly 1:1 with ballot batches, and ~52% of all SQL statements under load.
    The batch-triggered flush passes false; explicit/tick flushes still write it
    so the DB retains a periodic tally checkpoint."
-  ([state] (execute-flush-transition state true))
-  ([state write-tally?]
+  ([state] (execute-flush-transition state true nil))
+  ([state write-tally?] (execute-flush-transition state write-tally? nil))
+  ([state write-tally? fencing]
    (if-not (or (:dirty? state) (seq (:pending-ballots state)) (seq (:pending-deltas state)))
     [state {:status :noop :flushes (:flushes state)} []]
     (let [next-flushes (inc (long (or (:flushes state) 0)))
@@ -61,6 +62,11 @@
                                     :ballots ballots
                                     :flushes next-flushes
                                     :last-sequence (:last-sequence state)}
+                             ;; Ownership epoch of the delivery that produced
+                             ;; this write, so the upsert can refuse to apply
+                             ;; over a newer owner. Absent when ownership is not
+                             ;; enforced, which keeps the write unguarded.
+                             (some? fencing) (assoc :fencing fencing)
                              write-tally?
                              (assoc :tallies (:tallies state)
                                     :total-votes (:total-votes state)))]
@@ -73,10 +79,7 @@
                                      :precinct-id precinct-id
                                      :deltas deltas
                                      :precinct-total (:total-votes state)
-                                     :flushes next-flushes}})
-
-                    true
-                    (conj {:type :snapshot}))
+                                     :flushes next-flushes}}))
           flushed-state (assoc state
                                :pending-ballots []
                                :pending-deltas {}
@@ -145,7 +148,7 @@
                        :precinct-total (:total-votes updated)}]
             (if (>= (count (:pending-ballots updated)) batch-size)
               (let [[flushed-state _flush-reply effects]
-                    (execute-flush-transition updated false)]
+                    (execute-flush-transition updated false (:fencing ctx))]
                 [flushed-state (assoc reply :flushed? true) effects])
               [updated reply []])))))))
 
@@ -172,7 +175,7 @@
       (handle-cast-vote state msg ctx)
 
       :flush
-      (execute-flush-transition state)
+      (execute-flush-transition state true (:fencing ctx))
 
       :tick
       ;; The tick used to flush unconditionally every tick-interval-ms, which at
@@ -188,7 +191,11 @@
         (if (or (zero? pending)
                 (>= pending min-batch)
                 (>= age-ms max-age))
-          (execute-flush-transition state)
+          ;; Ballots only. The tally row is a DB checkpoint for reporting and for
+          ;; the no-actor fallback, and this tick is the dominant flush path --
+          ;; writing it here put a single-row upsert on the hot path at the same
+          ;; rate as ballot batches (measured 241 upserts/s against 242 inserts/s).
+          (execute-flush-transition state false (:fencing ctx))
           [state {:status :deferred :pending-ballots pending} []]))
 
       :get-tally
@@ -200,7 +207,11 @@
         :rejected-duplicates (:rejected-duplicates state)
         :rejected-window (:rejected-window state)
         :pending-ballots-count (count (:pending-ballots state))
-        :flushes (:flushes state)}
+        :flushes (:flushes state)
+        ;; Eventual-consistency marker: this reply may exclude ballots still in
+        ;; the queue. A client can compare last-sequence across polls instead of
+        ;; assuming monotonic totals.
+        :last-sequence (:last-sequence state)}
        []]
 
       [state {:status :error :error (str "Unknown message type: " msg-type)} []])))

@@ -6,6 +6,10 @@
         org.clojars.cinguilherme/d-core-grpc {:local/root "../d-core-grpc"}
         d-core/d-core-async-proxy {:local/root "../d-core-async-proxy"}
         org.clojars.cinguilherme/d-core-actor-system {:local/root "../d-core-actor-system"}
+        ;; Partition ownership leases. Valkey-backed: a lease store is a
+        ;; coordination substrate, and putting leases in the election database
+        ;; would make them contend with the tally writes they are meant to guard.
+        org.clojars.cinguilherme/d-core-leader-election {:local/root "../d-core-leader-election"}
 
         ;; Clojure Core & Async
         org.clojure/clojure {:mvn/version "1.12.3"}

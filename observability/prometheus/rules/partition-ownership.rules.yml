@@ -1,0 +1,52 @@
+groups:
+  - name: partition-ownership
+    interval: 15s
+    rules:
+      # The invariant the whole ownership design exists to maintain: every
+      # partition has exactly one lease holder. `sum(election_leaders_held)` is
+      # cluster-wide (both actor nodes are scraped), so a shortfall means some
+      # shard is unowned — its backlog grows and nothing consumes it.
+      #
+      # `or vector(0)` matters for the same reason it does in async-proxy.rules:
+      # when the last actor node dies its target disappears entirely, and a bare
+      # `sum(...)` would return no data — staying silent during exactly the
+      # outage this alert exists to catch.
+      - alert: PartitionOwnershipIncomplete
+        expr: |
+          ((max(election_partitions_total) or vector(0))
+           - (sum(election_leaders_held) or vector(0))) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: election-actors
+        annotations:
+          summary: "{{ $value | printf \"%.0f\" }} partition(s) have no lease holder"
+          description: >-
+            The cluster holds fewer partition leases than it has partitions, so
+            at least one shard is unowned. Messages keep accumulating in
+            JetStream for it and no actor consumes them. Check which partitions
+            are missing a lease and why the survivor has not claimed them:
+            `docker compose logs election-actors-1 election-actors-2 | grep "\[ownership\]"`.
+
+      # A healthy assignment is roughly even. Losing the majority of partitions
+      # to one node is survivable but leaves the cluster one failure away from
+      # unowned work, and it concentrates load: the 1-of-8 split observed here
+      # put the single hot partition on the minority node, so killing that node
+      # stalled ingestion while the other held seven nearly idle partitions.
+      # Fix by raising TOTAL_PARTITIONS (rendezvous variance shrinks as the
+      # partition count grows) rather than by reshuffling after the fact.
+      - alert: PartitionOwnershipSkewed
+        expr: |
+          (max(election_leaders_held) / clamp_min(max(election_partitions_total), 1) > 0.75)
+          and (count(election_leaders_held) > 1)
+        for: 2m
+        labels:
+          severity: warning
+          component: election-actors
+        annotations:
+          summary: "One actor node holds {{ $value | printf \"%.0f\" }}x its fair share of partitions"
+          description: >-
+            A single node owns more than 75% of the partitions while another node
+            is alive. This is rendezvous variance, not a fault: few partitions
+            over few members makes lopsided draws likely. Consider raising
+            TOTAL_PARTITIONS (and, in future, adding an instance).
