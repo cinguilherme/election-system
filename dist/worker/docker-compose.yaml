@@ -75,7 +75,7 @@ services:
       NATS_URL: "nats://nats:4222"
       OTEL_SERVICE_NAME: "async-proxy"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
-      OTEL_SAMPLING_RATIO: "0.10"
+      OTEL_SAMPLING_RATIO: "${OTEL_SAMPLING_RATIO:-0.05}"
       # General purpose: the same gRPC service answers publish and subscribe, so
       # every replica may serve either role -- and must therefore validate lease
       # ownership. Fail-closed: if the lease store is unreachable the
@@ -185,7 +185,7 @@ services:
       LEADERSHIP_HOLD_OFF_MS: "3000"
       OTEL_SERVICE_NAME: "election-actors"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
-      OTEL_SAMPLING_RATIO: "0.10"
+      OTEL_SAMPLING_RATIO: "${OTEL_SAMPLING_RATIO:-0.05}"
       JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081"]
@@ -233,7 +233,7 @@ services:
       JETTY_MAX_THREADS: "400"
       OTEL_SERVICE_NAME: "election-api"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
-      OTEL_SAMPLING_RATIO: "0.10"
+      OTEL_SAMPLING_RATIO: "${OTEL_SAMPLING_RATIO:-0.05}"
       JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]

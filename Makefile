@@ -5,15 +5,26 @@ build-base:
 	@echo "Building shared base image d-core-base:latest..."
 	docker build -t d-core-base:latest -f Dockerfile.base .
 
-# The base image must match the target platform: an arm64 base silently produces
-# arm64 children, which is exactly how an amd64 host ends up with "no match for
-# linux/amd64 in the manifest list".
+PUBLIC_IMAGES = nats:2.10-alpine valkey/valkey:8-alpine postgres:16-alpine \
+                jaegertracing/all-in-one:1.60 ghcr.io/google/cadvisor:v0.60.6
+
+# The base image and any pre-cached public images must match $(PLATFORM):
+# an arm64 base silently produces arm64 children, and a locally cached arm64
+# public image causes `docker compose up` to fail with "image with reference ...
+# was found but does not provide the specified platform (linux/amd64)".
 ensure-base:
 	@arch=$$(docker image inspect d-core-base:latest --format '{{.Os}}/{{.Architecture}}' 2>/dev/null || echo none); \
 	if [ "$$arch" != "$(PLATFORM)" ]; then \
 	  echo "Base image is $$arch, need $(PLATFORM). Rebuilding..."; \
 	  $(MAKE) build-base; \
 	fi
+	@for img in $(PUBLIC_IMAGES); do \
+	  arch=$$(docker image inspect "$$img" --format '{{.Os}}/{{.Architecture}}' 2>/dev/null || echo none); \
+	  if [ "$$arch" != "none" ] && [ "$$arch" != "$(PLATFORM)" ]; then \
+	    echo "Image $$img is cached as $$arch, pulling $(PLATFORM)..."; \
+	    docker pull --platform "$(PLATFORM)" "$$img"; \
+	  fi; \
+	done
 
 tests:
 	clojure -M:test
@@ -36,7 +47,7 @@ lint:
 #   docker-compose.load.yaml           k6 generators (run from another machine)
 #   docker-compose.perf.yaml           extra capabilities for profiling
 #   docker-compose.registry.yaml       the image registry
-up:
+up: ensure-base
 	docker compose -f docker-compose.yaml -f docker-compose.observability.yaml up -d
 
 up-build: ensure-base

@@ -4,16 +4,17 @@ Everything needed to answer "where is the time going?" for the election stack:
 Prometheus metrics, Grafana dashboards, Jaeger traces, and async-profiler
 flamegraphs from inside the running containers.
 
+*(For local replica scaling and remote Windows worker / load-test setup, see [../README.md](../README.md).)*
+
 ---
 
 ## 1. What is collected
 
-| Source | Endpoint | Prometheus job | `tier` label |
+| Source | Endpoint (DNS-discovered) | Prometheus job | `tier` label |
 | :--- | :--- | :--- | :--- |
-| election-api-1 / -2 | `:8080/metrics` | `election-api` | `api` |
-| election-actors-1 / -2 | `:8081`, `:8082` `/metrics` | `election-actors` | `actors` |
-| async-proxy-ingress | `:4000/metrics` | `async-proxy-ingress` | `proxy-ingress` |
-| async-proxy-egress | `:4001/metrics` | `async-proxy-egress` | `proxy-egress` |
+| `election-api-backend` (N replicas) | `:8080/metrics` | `election-api` | `api` |
+| `election-actors` (N replicas) | `:8081/metrics` | `election-actors` | `actors` |
+| `async-proxy` (N replicas) | `:4000/metrics` | `async-proxy-ingress` / `async-proxy-egress` | `proxy-ingress` / `proxy-egress` |
 | **cadvisor** | `:8089/metrics` | `cadvisor` | *(per-container `service`)* |
 | Traces (OTLP HTTP) | `jaeger:4318/v1/traces` | — | Jaeger UI `:16686` |
 
@@ -184,21 +185,27 @@ core.async stream pumps.
 
 ## 4. Traces
 
-Jaeger is at <http://localhost:16686>. Services: `election-api-1`,
-`election-api-2`, `election-actors`, `async-proxy`.
+Jaeger is at <http://localhost:16686>. Services: `election-api`,
+`election-actors`, `async-proxy` (each replica carries `service.instance.id` and
+`host.name` resource attributes).
 
-Proxy-side spans:
+End-to-end spans:
 
 | Span | Kind | Meaning |
 | :--- | :--- | :--- |
+| `POST /elections/:id/votes` / `GET /elections/:id/...` | server | HTTP ingress in `election-api-backend` |
+| `proxy.client.publish` | producer | gRPC client publish to `async-proxy` |
 | `proxy.ingress.publish` | server | proxy work to accept a publish |
 | `jetstream.publish_async` | producer | enqueue to JetStream |
 | `proxy.egress.dispatch_stream` | producer | proxy work to hand a message to a subscriber |
-| `proxy.client.publish` | — | root span for the whole chain |
+| `actor.step_execute` | consumer | actor mailbox step execution in `election-actors` |
+| `actor.peek_state` | internal | direct in-memory read-lane response in `election-actors` |
 
-Sampling is controlled by `OTEL_SAMPLING_RATIO` (currently `0.10`). Raise it to
-`1.0` for short debugging runs, and remember Jaeger keeps only
-`MEMORY_MAX_TRACES=5000`.
+Sampling is controlled by `OTEL_SAMPLING_RATIO` (default `0.05`; untraced
+periodic `:tick` steps propagate an unsampled `00` trace flag so downstream
+`parentBased` samplers do not start orphan root traces). Raise it to `1.0` for
+short debugging runs; Jaeger retains `MEMORY_MAX_TRACES=50000` (configurable via
+`JAEGER_MAX_TRACES`).
 
 ---
 

@@ -27,7 +27,6 @@
             [d-core-async-proxy.subscriptions.registry :as reg]
             [election-system.actors.precinct :as precinct]
             [election-system.actors.tally :as tally]
-            [election-system.actors.tally :as tally]
             [election-system.api.routes :as routes]
             [election-system.db.schema :as schema]
             [election-system.db.writer :as writer]
@@ -269,11 +268,18 @@
                              (engine/peek-state engine etype eid))]
                  (if state
                    ;; Answer immediately from memory; no mailbox, no queue.
-                   (do (reply-fn (case (keyword etype)
+                   (let [carrier (or (:metadata env) (get-in env [:payload :metadata]) (:context env))]
+                     (otel/with-span [nil "actor.peek_state"
+                                      {:carrier carrier
+                                       :kind :internal
+                                       :attributes {"entity.type" (name etype)
+                                                    "entity.id" (str eid)
+                                                    "op" (name msg-type)}}]
+                       (reply-fn (case (keyword etype)
                                    :precinct (precinct/tally-view state)
                                    :election-tally (tally/tally-view state)
-                                   (precinct/tally-view state)))
-                       nil)
+                                   (precinct/tally-view state))))
+                     nil)
                    (engine/dispatch-envelope! engine etype eid env))))
              {:partition partition
               :partitions partitions
@@ -300,7 +306,8 @@
         tot-partitions (long (or total-partitions (max (count assigned) (or worker-count 4))))
         {:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
         {:keys [prom-registry prom-metrics]} (init-prometheus true)
-        tracer-ctx (otel/init-tracer {:service-name (or (System/getenv "OTEL_SERVICE_NAME") "election-actors")})
+        tracer-ctx (otel/init-tracer {:service-name (or (System/getenv "OTEL_SERVICE_NAME") "election-actors")
+                                      :instance-id (:instance-id ownership)})
         ;; Report the name the tracer actually registered. Spans from this process
         ;; were showing up in Jaeger under a different service, and without this
         ;; line there is no way to tell "wrong name" from "wrong data in Jaeger".

@@ -244,12 +244,26 @@
   "Constructs an `EntitySpec` for `:precinct` actors."
   ([]
    (make-precinct-spec {}))
-  ([{:keys [election-id opens-at closes-at batch-size tick-interval-ms idle-timeout-ms snapshot-every-n]}]
-   (cond-> {:init-fn #(init-precinct-state % {:election-id election-id
-                                              :opens-at opens-at
-                                              :closes-at closes-at
-                                              :batch-size batch-size})
-            :step-fn precinct-step
-            :idle-timeout-ms (or idle-timeout-ms 300000)
-            :snapshot-every-n (or snapshot-every-n 500)}
-     tick-interval-ms (assoc :tick-interval-ms tick-interval-ms))))
+  ([{:keys [election-id opens-at closes-at batch-size tick-min-batch tick-max-age-ms
+            tick-interval-ms tell-interval-ms idle-timeout-ms snapshot-every-n]}]
+   (let [tick-policy (cond-> {}
+                       (some? tick-min-batch) (assoc :tick-min-batch (long tick-min-batch))
+                       (some? tick-max-age-ms) (assoc :tick-max-age-ms (long tick-max-age-ms))
+                       (some? tick-interval-ms) (assoc :tick-interval-ms (long tick-interval-ms))
+                       (some? tell-interval-ms) (assoc :tell-interval-ms (long tell-interval-ms)))]
+     (cond-> {:init-fn #(init-precinct-state % {:election-id election-id
+                                                :opens-at opens-at
+                                                :closes-at closes-at
+                                                :batch-size batch-size
+                                                :tick-min-batch tick-min-batch
+                                                :tick-max-age-ms tick-max-age-ms
+                                                :tick-interval-ms tick-interval-ms
+                                                :tell-interval-ms tell-interval-ms})
+              :step-fn (if (seq tick-policy)
+                         (fn [state msg ctx]
+                           (precinct-step (merge state tick-policy) msg ctx))
+                         precinct-step)
+              :idle-timeout-ms (or idle-timeout-ms 300000)
+              :snapshot-every-n (or snapshot-every-n 500)}
+       tick-interval-ms (assoc :tick-interval-ms tick-interval-ms)))))
+

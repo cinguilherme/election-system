@@ -88,4 +88,31 @@
           [s2 _ _] (cast! s1 "v-2")
           [_ r eff] (precinct/precinct-step s2 {:type :tick} {})]
       (is (= :flushed (:status r)))
-      (is (some? (db-effect eff))))))
+      (is (some? (db-effect eff)))))
+
+  (testing "make-precinct-spec forwards tick-min-batch, tick-max-age-ms, and tell-interval-ms"
+    (let [spec (precinct/make-precinct-spec {:election-id "gen-2026"
+                                             :opens-at open-inst
+                                             :closes-at close-inst
+                                             :batch-size 200
+                                             :tick-min-batch 200
+                                             :tick-max-age-ms 10000
+                                             :tick-interval-ms 2000
+                                             :tell-interval-ms 500})
+          init-fn (:init-fn spec)
+          step-fn (:step-fn spec)
+          s0 (init-fn "p-01")
+          [s1 _ _] (cast! s0 "v-1")
+          [s2 r2 eff2] (step-fn s1 {:type :tick} {})]
+      (is (= 200 (:tick-min-batch s0)))
+      (is (= 10000 (:tick-max-age-ms s0)))
+      (is (= 2000 (:tick-interval-ms s0)))
+      (is (= 500 (:tell-interval-ms s0)))
+      (is (= :deferred (:status r2)) "spec-initialized actor must defer 1-ballot tick flush")
+      (is (empty? eff2))
+      (is (= 1 (count (:pending-ballots s2))))
+      ;; Even if a snapshot from an older run had :tick-min-batch 0, the spec's policy wins
+      (let [[_ r-stale eff-stale] (step-fn (assoc s1 :tick-min-batch 0) {:type :tick} {})]
+        (is (= :deferred (:status r-stale)))
+        (is (empty? eff-stale))))))
+
