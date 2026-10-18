@@ -192,9 +192,10 @@ services:
   # container; the proxies themselves are general purpose.
 
   async-proxy-gateway:
-    image: nginx:1.27-alpine
-    volumes:
-      - ./observability/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-proxy-gateway:${TAG:-latest}
+    build:
+      context: ..
+      dockerfile: election-system/observability/nginx/Dockerfile
     ports:
       - "50051:50051"
       - "50052:50052"
@@ -474,12 +475,13 @@ services:
           memory: 1536M
 
   election-api:
-    image: nginx:1.27-alpine
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-api-lb:${TAG:-latest}
+    build:
+      context: ..
+      dockerfile: election-system/docker/nginx/Dockerfile
     restart: unless-stopped
     ports:
       - "8080:8080"
-    volumes:
-      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/health || exit 1"]
       interval: 2s

@@ -271,8 +271,13 @@ registry:
 # a build and the rest just reference the image:
 #   async-proxy-1      builds election-system-async-proxy (proxies 1..3)
 #   election-actors-1  builds election-system            (ROLE selects api/actors)
-BUILT  = async-proxy-1 election-actors-1
-IMAGES = election-system-async-proxy election-system
+# The four config services are also images now: a worker machine needs nothing
+# but the compose files and the registry -- no observability/ tree on disk.
+BUILT  = async-proxy-1 election-actors-1 election-api async-proxy-gateway \
+         prometheus grafana k6
+IMAGES = election-system-async-proxy election-system election-system-api-lb \
+         election-system-proxy-gateway election-system-prometheus \
+         election-system-grafana election-system-k6
 
 images:
 	$(COMPOSE) build $(BUILT)

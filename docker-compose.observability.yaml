@@ -60,23 +60,24 @@ services:
           memory: 512M
 
   prometheus:
-    image: prom/prometheus:v2.53.0
-    volumes:
-      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-prometheus:${TAG:-latest}
+    build:
+      context: ..
+      dockerfile: election-system/observability/prometheus/Dockerfile
     ports:
       - "9090:9090"
 
   grafana:
-    image: grafana/grafana:11.1.0
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-grafana:${TAG:-latest}
+    build:
+      context: ..
+      dockerfile: election-system/observability/grafana/Dockerfile
     environment:
       GF_SECURITY_ADMIN_USER: "admin"
       GF_SECURITY_ADMIN_PASSWORD: "admin"
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/etc/grafana/provisioning/dashboards/election-system-dashboard.json"
-    volumes:
-      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
       - "3000:3000"
     depends_on:

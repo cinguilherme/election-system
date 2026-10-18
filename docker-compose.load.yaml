@@ -5,7 +5,10 @@
 services:
 
   k6:
-    image: grafana/k6:0.52.0
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-k6:${TAG:-latest}
+    build:
+      context: ..
+      dockerfile: election-system/observability/k6/Dockerfile
     profiles: ["load"]
     environment: &k6-env
       API_URL: "http://election-api:8080"
@@ -29,32 +32,26 @@ services:
       STAGE_3_RATE: "${STAGE_3_RATE:-8000}"
       STAGE_4_RATE: "${STAGE_4_RATE:-12000}"
       MAX_VUS: "${MAX_VUS:-3500}"
-    volumes:
-      - ./observability/k6:/scripts:ro
     command: ["run", "/scripts/election_load.js"]
     depends_on:
       election-api:
         condition: service_healthy
 
   k6-1:
-    image: grafana/k6:0.52.0
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-k6:${TAG:-latest}
     profiles: ["load"]
     environment:
       <<: *k6-env
-    volumes:
-      - ./observability/k6:/scripts:ro
     command: ["run", "--execution-segment", "0:1/2", "/scripts/election_load.js"]
     depends_on:
       election-api:
         condition: service_healthy
 
   k6-2:
-    image: grafana/k6:0.52.0
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-k6:${TAG:-latest}
     profiles: ["load"]
     environment:
       <<: *k6-env
-    volumes:
-      - ./observability/k6:/scripts:ro
     command: ["run", "--execution-segment", "1/2:1", "/scripts/election_load.js"]
     depends_on:
       election-api:
