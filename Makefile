@@ -245,8 +245,14 @@ clean:
 # ---------------------------------------------------------------------------
 # Lab: image registry so worker machines pull instead of build
 # ---------------------------------------------------------------------------
+# .env holds REGISTRY (the LAN address of whichever machine serves the registry)
+# and optionally TAG. Read it here as well as in compose, so `make` and
+# `docker compose` can never disagree about the image names.
+-include .env
+export
+
 COMPOSE = docker compose -f docker-compose.yaml -f docker-compose.observability.yaml
-REGISTRY ?= localhost:5001
+REGISTRY ?= 192.168.15.29:5001
 KEEP ?= 10
 # Tag by commit so every image is traceable back to the source that produced it.
 LAB_TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d-%H%M%S)
@@ -286,6 +292,13 @@ prune:
 
 tags:
 	./scripts/registry-prune.sh
+
+# Prove the registry is reachable from this machine before blaming the build.
+registry-check:
+	@printf 'registry %s: ' "$(REGISTRY)"; \
+	  curl -sS -o /dev/null -w 'HTTP %{http_code}\n' "http://$(REGISTRY)/v2/" || \
+	  echo "unreachable -- check the IP, the firewall, and that the registry is running"
+	@curl -fsS "http://$(REGISTRY)/v2/_catalog" 2>/dev/null | head -c 300; echo
 
 # Print exactly what a worker machine needs.
 worker-env:
