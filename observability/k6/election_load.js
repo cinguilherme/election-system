@@ -161,8 +161,20 @@ function selectElectionContext(state, iter) {
   return `governor-${state}-2026`;
 }
 
+// How many votes one voter iteration casts. Fewer VUs doing more work per
+// iteration is the honest way to measure server capacity: with 500 VUs the
+// limiter was the k6 client side (~124ms per vote end to end, of which the
+// server spent ~17ms), so the run measured the client, not the system.
+const VOTES_PER_ITERATION = Math.max(1, parseInt(__ENV.VOTES_PER_ITERATION || '1', 10));
+
 // Scenario 1: Dedicated voting pool
 export function castVotes() {
+  for (let seq = 0; seq < VOTES_PER_ITERATION; seq++) {
+    castOneVote(seq);
+  }
+}
+
+function castOneVote(seq) {
   const roll = Math.random();
   const stateIdx = (__VU + __ITER) % STATES.length;
   const state = STATES[stateIdx];
@@ -178,7 +190,7 @@ export function castVotes() {
 
   if (roll < 0.90) {
     // 90%: Unique valid ballot submission
-    const voterId = `voter-${state}-vu${__VU}-it${__ITER}-${Date.now()}`;
+    const voterId = `voter-${state}-vu${__VU}-it${__ITER}-${seq}-${Date.now()}`;
     const payload = `{"precinct_id":"${precinctId}","voter_id":"${voterId}","candidate_id":"${candidateId}","async":true}`;
     const res = http.post(
       `${BASE_URL}/v1/elections/${electionId}/votes`,

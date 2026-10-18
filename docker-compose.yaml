@@ -429,7 +429,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.90"
+          cpus: "1.00"
           memory: 1536M
 
   election-api-2:

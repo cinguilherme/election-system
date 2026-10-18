@@ -161,6 +161,12 @@
         {:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
         {:keys [prom-registry prom-metrics]} (init-prometheus true)
         tracer-ctx (otel/init-tracer {:service-name (or (System/getenv "OTEL_SERVICE_NAME") "election-api")})
+        ;; Report the name the tracer actually registered. Spans from this process
+        ;; were showing up in Jaeger under a different service, and without this
+        ;; line there is no way to tell "wrong name" from "wrong data in Jaeger".
+        _ (println (str "[tracing] service-name=" (:service-name tracer-ctx)
+                        " endpoint=" (or (System/getenv "OTEL_EXPORTER_OTLP_ENDPOINT") "none")
+                        " sampling=" (or (System/getenv "OTEL_SAMPLING_RATIO") "1.0")))
         metrics-atom (writer/make-write-metrics)
         ingress-transport (ap-transport/create-async-proxy-transport
                            {:transport :netty
@@ -295,6 +301,12 @@
         {:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
         {:keys [prom-registry prom-metrics]} (init-prometheus true)
         tracer-ctx (otel/init-tracer {:service-name (or (System/getenv "OTEL_SERVICE_NAME") "election-actors")})
+        ;; Report the name the tracer actually registered. Spans from this process
+        ;; were showing up in Jaeger under a different service, and without this
+        ;; line there is no way to tell "wrong name" from "wrong data in Jaeger".
+        _ (println (str "[tracing] service-name=" (:service-name tracer-ctx)
+                        " endpoint=" (or (System/getenv "OTEL_EXPORTER_OTLP_ENDPOINT") "none")
+                        " sampling=" (or (System/getenv "OTEL_SAMPLING_RATIO") "1.0")))
         metrics-atom (writer/make-write-metrics)
         effect-handler (writer/make-effect-handler db metrics-atom nil prom-metrics)
         snapshot-store (sql-adapter/create-sql-snapshot-store db)
