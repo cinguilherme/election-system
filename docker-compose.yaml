@@ -1,4 +1,9 @@
+# Core: broker, lease store, database, proxies, actors, API
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.observability.yaml up -d
+
 services:
+
   nats:
     image: nats:2.10-alpine
     command: ["-js", "-m", "8222"]
@@ -16,6 +21,7 @@ services:
   #   --appendonly yes              : so a restart does not reset the same counter.
   # Combined with a named volume, the epoch survives both a valkey restart and a
   # redeploy.
+
   valkey:
     image: valkey/valkey:8-alpine
     command:
@@ -61,6 +67,7 @@ services:
           memory: 512M
 
   async-proxy-1:
+    image: "${REGISTRY:-localhost:5001}/election-system-async-proxy-1:${TAG:-dev}"
     build:
       context: ..
       dockerfile: d-core-async-proxy/Dockerfile
@@ -91,7 +98,6 @@ services:
       retries: 30
     depends_on:
       - nats
-      - jaeger
       - valkey
     cap_add:
       - SYS_PTRACE
@@ -104,6 +110,7 @@ services:
           memory: 1024M
 
   async-proxy-2:
+    image: "${REGISTRY:-localhost:5001}/election-system-async-proxy-2:${TAG:-dev}"
     build:
       context: ..
       dockerfile: d-core-async-proxy/Dockerfile
@@ -132,7 +139,6 @@ services:
       retries: 30
     depends_on:
       - nats
-      - jaeger
       - valkey
     cap_add:
       - SYS_PTRACE
@@ -145,6 +151,7 @@ services:
           memory: 1024M
 
   async-proxy-3:
+    image: "${REGISTRY:-localhost:5001}/election-system-async-proxy-3:${TAG:-dev}"
     build:
       context: ..
       dockerfile: d-core-async-proxy/Dockerfile
@@ -173,7 +180,6 @@ services:
       retries: 30
     depends_on:
       - nats
-      - jaeger
       - valkey
     cap_add:
       - SYS_PTRACE
@@ -190,6 +196,7 @@ services:
   # below make them resolve here -- so replicating the data plane is invisible
   # upstream. "Ingress" and "egress" exist only as two listeners on this
   # container; the proxies themselves are general purpose.
+
   async-proxy-gateway:
     image: nginx:1.27-alpine
     volumes:
@@ -222,6 +229,7 @@ services:
           - async-proxy-egress
 
   election-actors-1:
+    image: "${REGISTRY:-localhost:5001}/election-system-election-actors-1:${TAG:-dev}"
     build:
       context: ..
       dockerfile: election-system/Dockerfile
@@ -288,8 +296,6 @@ services:
         condition: service_healthy
       async-proxy-gateway:
         condition: service_healthy
-      jaeger:
-        condition: service_started
     cap_add:
       - SYS_PTRACE
       # PERFMON is required for `asprof -e cpu` (perf_events sampling).
@@ -303,6 +309,7 @@ services:
           memory: 1536M
 
   election-actors-2:
+    image: "${REGISTRY:-localhost:5001}/election-system-election-actors-2:${TAG:-dev}"
     build:
       context: ..
       dockerfile: election-system/Dockerfile
@@ -365,8 +372,6 @@ services:
         condition: service_healthy
       async-proxy-gateway:
         condition: service_healthy
-      jaeger:
-        condition: service_started
     cap_add:
       - SYS_PTRACE
       # PERFMON is required for `asprof -e cpu` (perf_events sampling).
@@ -380,6 +385,7 @@ services:
           memory: 1536M
 
   election-api-1:
+    image: "${REGISTRY:-localhost:5001}/election-system-election-api-1:${TAG:-dev}"
     build:
       context: ..
       dockerfile: election-system/Dockerfile
@@ -418,8 +424,6 @@ services:
         condition: service_healthy
       election-actors-2:
         condition: service_healthy
-      jaeger:
-        condition: service_started
     cap_add:
       - SYS_PTRACE
       # PERFMON is required for `asprof -e cpu` (perf_events sampling).
@@ -433,6 +437,7 @@ services:
           memory: 1536M
 
   election-api-2:
+    image: "${REGISTRY:-localhost:5001}/election-system-election-api-2:${TAG:-dev}"
     build:
       context: ..
       dockerfile: election-system/Dockerfile
@@ -471,8 +476,6 @@ services:
         condition: service_healthy
       election-actors-2:
         condition: service_healthy
-      jaeger:
-        condition: service_started
     cap_add:
       - SYS_PTRACE
       # PERFMON is required for `asprof -e cpu` (perf_events sampling).
@@ -510,150 +513,6 @@ services:
           cpus: "2.00"
           memory: 256M
 
-  jaeger:
-    image: jaegertracing/all-in-one:1.60
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
-      - MEMORY_MAX_TRACES=5000
-    ports:
-      - "16686:16686"
-      - "4317:4317"
-      - "4318:4318"
-    deploy:
-      resources:
-        limits:
-          cpus: "0.40"
-          memory: 512M
-
-  # Container-level resource telemetry. Without this, Prometheus only sees the
-  # six application /metrics endpoints, so cgroup CPU quota, CFS throttling,
-  # working-set memory and OOM events are invisible -- which is how the
-  # async-proxy containers were being throttled ~25% of CFS periods while every
-  # application dashboard looked healthy.
-  cadvisor:
-    # NOTE: ghcr.io, not gcr.io. The gcr.io/cadvisor mirror is stale at v0.55.1,
-    # and anything before v0.60.x cannot resolve container layers when Docker uses
-    # the containerd image store ("Storage Driver: overlayfs" on Docker Desktop 28),
-    # which silently yields a single root-cgroup series and no throttling metrics.
-    image: ghcr.io/google/cadvisor:v0.60.6
-    ports:
-      - "8089:8080"
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
-    privileged: true
-    devices:
-      - /dev/kmsg
-    command:
-      # docker_only keeps cardinality down: only compose containers are exported,
-      # not every host cgroup.
-      - --docker_only=true
-      - --housekeeping_interval=2s
-      # store_container_labels MUST be false for the whitelist to take effect --
-      # with it true, every compose/image label is exported instead.
-      - --store_container_labels=false
-      # Whitelist only the compose labels, so Prometheus can promote a stable
-      # `service` label (e.g. async-proxy-egress) instead of parsing container names.
-      - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
-    deploy:
-      resources:
-        limits:
-          cpus: "0.50"
-          memory: 512M
-
-  prometheus:
-    image: prom/prometheus:v2.53.0
-    volumes:
-      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
-    ports:
-      - "9090:9090"
-    depends_on:
-      election-api:
-        condition: service_healthy
-      election-actors-1:
-        condition: service_healthy
-      election-actors-2:
-        condition: service_healthy
-      async-proxy-gateway:
-        condition: service_healthy
-
-  grafana:
-    image: grafana/grafana:11.1.0
-    environment:
-      GF_SECURITY_ADMIN_USER: "admin"
-      GF_SECURITY_ADMIN_PASSWORD: "admin"
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/etc/grafana/provisioning/dashboards/election-system-dashboard.json"
-    volumes:
-      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
-    ports:
-      - "3000:3000"
-    depends_on:
-      - prometheus
-      - jaeger
-
-  k6:
-    image: grafana/k6:0.52.0
-    profiles: ["load"]
-    environment: &k6-env
-      API_URL: "http://election-api:8080"
-      ELECTION_ID: "national-2026"
-      STAGE_1_VUS: "${STAGE_1_VUS:-50}"
-      STAGE_1_DURATION: "${STAGE_1_DURATION:-20s}"
-      STAGE_2_VUS: "${STAGE_2_VUS:-150}"
-      STAGE_2_DURATION: "${STAGE_2_DURATION:-40s}"
-      STAGE_3_VUS: "${STAGE_3_VUS:-300}"
-      STAGE_3_DURATION: "${STAGE_3_DURATION:-45s}"
-      STAGE_4_VUS: "${STAGE_4_VUS:-500}"
-      STAGE_4_DURATION: "${STAGE_4_DURATION:-45s}"
-      STAGE_5_DURATION: "${STAGE_5_DURATION:-15s}"
-      SLEEP_S: "${SLEEP_S:-0.001}"
-      VOTER_SLEEP_S: "${VOTER_SLEEP_S:-0.001}"
-      OBSERVER_SLEEP_S: "${OBSERVER_SLEEP_S:-0.1}"
-      REQ_TIMEOUT: "${REQ_TIMEOUT:-5s}"
-      LOAD_TYPE: "${LOAD_TYPE:-vus}"
-      STAGE_1_RATE: "${STAGE_1_RATE:-2000}"
-      STAGE_2_RATE: "${STAGE_2_RATE:-5000}"
-      STAGE_3_RATE: "${STAGE_3_RATE:-8000}"
-      STAGE_4_RATE: "${STAGE_4_RATE:-12000}"
-      MAX_VUS: "${MAX_VUS:-3500}"
-    volumes:
-      - ./observability/k6:/scripts:ro
-    command: ["run", "/scripts/election_load.js"]
-    depends_on:
-      election-api:
-        condition: service_healthy
-
-  k6-1:
-    image: grafana/k6:0.52.0
-    profiles: ["load"]
-    environment:
-      <<: *k6-env
-    volumes:
-      - ./observability/k6:/scripts:ro
-    command: ["run", "--execution-segment", "0:1/2", "/scripts/election_load.js"]
-    depends_on:
-      election-api:
-        condition: service_healthy
-
-  k6-2:
-    image: grafana/k6:0.52.0
-    profiles: ["load"]
-    environment:
-      <<: *k6-env
-    volumes:
-      - ./observability/k6:/scripts:ro
-    command: ["run", "--execution-segment", "1/2:1", "/scripts/election_load.js"]
-    depends_on:
-      election-api:
-        condition: service_healthy
-
 volumes:
-  # Holds the fencing counters. Losing this volume does not lose votes, it loses
-  # the monotonicity that makes stale writes detectable -- so it is persisted.
   valkey-data:
+  postgres-data:

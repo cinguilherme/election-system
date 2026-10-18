@@ -1,0 +1,36 @@
+# Image registry for the lab.
+#
+#   docker compose -f docker-compose.registry.yaml up -d
+#
+# Every other machine pulls from here instead of building. Images are addressed
+# as ${REGISTRY:-localhost:5000}/election-system-<service>:${TAG:-dev}, so a
+# worker only needs two environment variables to run the stack.
+#
+# Retention is handled by scripts/registry-prune.sh, which keeps the newest N
+# tags per repository and garbage-collects the blobs. The registry API has no
+# retention of its own -- without the sweep this volume grows without bound.
+services:
+  registry:
+    image: registry:2
+    restart: unless-stopped
+    ports:
+      # Bind on all interfaces: the whole point is that other machines on the LAN
+      # can push and pull. Host port 5001, not 5000: on macOS the ControlCenter
+      # (AirPlay Receiver) already listens on 5000 and answers every request with
+      # 403, which looks exactly like a broken registry.
+      - "5001:5000"
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+      # Keep the internal API quiet; the prune script talks to /v2 directly.
+      REGISTRY_LOG_LEVEL: warn
+    volumes:
+      - registry-data:/var/lib/registry
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/v2/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  registry-data:

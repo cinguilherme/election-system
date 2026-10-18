@@ -1,0 +1,61 @@
+# Load generators. Run these from another machine:
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.observability.yaml up -d
+
+services:
+
+  k6:
+    image: grafana/k6:0.52.0
+    profiles: ["load"]
+    environment: &k6-env
+      API_URL: "http://election-api:8080"
+      ELECTION_ID: "national-2026"
+      STAGE_1_VUS: "${STAGE_1_VUS:-50}"
+      STAGE_1_DURATION: "${STAGE_1_DURATION:-20s}"
+      STAGE_2_VUS: "${STAGE_2_VUS:-150}"
+      STAGE_2_DURATION: "${STAGE_2_DURATION:-40s}"
+      STAGE_3_VUS: "${STAGE_3_VUS:-300}"
+      STAGE_3_DURATION: "${STAGE_3_DURATION:-45s}"
+      STAGE_4_VUS: "${STAGE_4_VUS:-500}"
+      STAGE_4_DURATION: "${STAGE_4_DURATION:-45s}"
+      STAGE_5_DURATION: "${STAGE_5_DURATION:-15s}"
+      SLEEP_S: "${SLEEP_S:-0.001}"
+      VOTER_SLEEP_S: "${VOTER_SLEEP_S:-0.001}"
+      OBSERVER_SLEEP_S: "${OBSERVER_SLEEP_S:-0.1}"
+      REQ_TIMEOUT: "${REQ_TIMEOUT:-5s}"
+      LOAD_TYPE: "${LOAD_TYPE:-vus}"
+      STAGE_1_RATE: "${STAGE_1_RATE:-2000}"
+      STAGE_2_RATE: "${STAGE_2_RATE:-5000}"
+      STAGE_3_RATE: "${STAGE_3_RATE:-8000}"
+      STAGE_4_RATE: "${STAGE_4_RATE:-12000}"
+      MAX_VUS: "${MAX_VUS:-3500}"
+    volumes:
+      - ./observability/k6:/scripts:ro
+    command: ["run", "/scripts/election_load.js"]
+    depends_on:
+      election-api:
+        condition: service_healthy
+
+  k6-1:
+    image: grafana/k6:0.52.0
+    profiles: ["load"]
+    environment:
+      <<: *k6-env
+    volumes:
+      - ./observability/k6:/scripts:ro
+    command: ["run", "--execution-segment", "0:1/2", "/scripts/election_load.js"]
+    depends_on:
+      election-api:
+        condition: service_healthy
+
+  k6-2:
+    image: grafana/k6:0.52.0
+    profiles: ["load"]
+    environment:
+      <<: *k6-env
+    volumes:
+      - ./observability/k6:/scripts:ro
+    command: ["run", "--execution-segment", "1/2:1", "/scripts/election_load.js"]
+    depends_on:
+      election-api:
+        condition: service_healthy

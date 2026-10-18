@@ -26,11 +26,17 @@ benchmark:
 lint:
 	clojure -M:lint --lint src test
 
+# The compose files are split by concern:
+#   docker-compose.yaml                broker, lease store, DB, proxies, actors, API
+#   docker-compose.observability.yaml  tracing, metrics, dashboards, container stats
+#   docker-compose.load.yaml           k6 generators (run from another machine)
+#   docker-compose.perf.yaml           extra capabilities for profiling
+#   docker-compose.registry.yaml       the image registry
 up:
-	docker compose up -d
+	docker compose -f docker-compose.yaml -f docker-compose.observability.yaml up -d
 
 up-build: ensure-base
-	docker compose up --build -d
+	docker compose -f docker-compose.yaml -f docker-compose.observability.yaml up --build -d
 
 # Bring the stack up with CAP_SYS_ADMIN so `asprof -e cpu` (perf_events) works.
 # Only needed on Docker Desktop, where the VM sets kernel.perf_event_paranoid=4;
@@ -40,7 +46,7 @@ up-perf:
 	docker compose -f docker-compose.yaml -f docker-compose.perf.yaml up -d
 
 down:
-	docker compose down -v
+	docker compose -f docker-compose.yaml -f docker-compose.observability.yaml down -v
 
 logs:
 	docker compose logs -f
@@ -235,3 +241,56 @@ reset-data:
 clean:
 	rm -rf target .cpcache .nrepl-port profiles
 
+
+# ---------------------------------------------------------------------------
+# Lab: image registry so worker machines pull instead of build
+# ---------------------------------------------------------------------------
+COMPOSE = docker compose -f docker-compose.yaml -f docker-compose.observability.yaml
+REGISTRY ?= localhost:5001
+KEEP ?= 10
+# Tag by commit so every image is traceable back to the source that produced it.
+LAB_TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d-%H%M%S)
+export REGISTRY
+export TAG = $(LAB_TAG)
+
+.PHONY: registry images push pull prune tags
+registry:
+	docker compose -f docker-compose.registry.yaml up -d
+
+# Only the services we build. `docker compose push` with no arguments pushes
+# EVERY service that has an `image:`, which includes nginx, nats, postgres,
+# jaeger, prometheus, grafana and cadvisor -- public images that must never be
+# pushed (and that fail anyway, since we cannot write to their registries).
+BUILT = async-proxy-1 async-proxy-2 async-proxy-3 \
+        election-actors-1 election-actors-2 \
+        election-api-1 election-api-2
+
+images:
+	$(COMPOSE) build $(BUILT)
+	@printf '\ntagged $(REGISTRY)/election-system-<service>:$(TAG)\n'
+
+push:
+	@for s in $(BUILT); do \
+	  docker image inspect "$(REGISTRY)/election-system-$$s:$(TAG)" >/dev/null 2>&1 || { \
+	    echo "missing $(REGISTRY)/election-system-$$s:$(TAG) -- run 'make images' first"; exit 1; }; \
+	done
+	$(COMPOSE) push $(BUILT)
+
+# On a worker: pull only what we built, then start. Public base images are pulled
+# by `up` itself.
+pull:
+	$(COMPOSE) pull $(BUILT)
+
+prune:
+	KEEP=$(KEEP) ./scripts/registry-prune.sh --apply
+
+tags:
+	./scripts/registry-prune.sh
+
+# Print exactly what a worker machine needs.
+worker-env:
+	@printf 'REGISTRY=%s\nTAG=%s\n\n' "$(REGISTRY)" "$(LAB_TAG)"
+	@printf 'On the worker:\n'
+	@printf '  REGISTRY=%s TAG=%s make pull up\n' "$(REGISTRY)" "$(LAB_TAG)"
+	@printf '  API base URL: http://<this-host>:8080\n'
+	@printf '  Grafana: http://<this-host>:3000   Jaeger: http://<this-host>:16686\n'

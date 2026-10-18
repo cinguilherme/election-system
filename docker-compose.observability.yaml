@@ -1,0 +1,87 @@
+# Observability: tracing, metrics, dashboards, container stats
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.observability.yaml up -d
+
+services:
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - MEMORY_MAX_TRACES=5000
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.40"
+          memory: 512M
+
+  # Container-level resource telemetry. Without this, Prometheus only sees the
+  # six application /metrics endpoints, so cgroup CPU quota, CFS throttling,
+  # working-set memory and OOM events are invisible -- which is how the
+  # async-proxy containers were being throttled ~25% of CFS periods while every
+  # application dashboard looked healthy.
+
+  cadvisor:
+    # NOTE: ghcr.io, not gcr.io. The gcr.io/cadvisor mirror is stale at v0.55.1,
+    # and anything before v0.60.x cannot resolve container layers when Docker uses
+    # the containerd image store ("Storage Driver: overlayfs" on Docker Desktop 28),
+    # which silently yields a single root-cgroup series and no throttling metrics.
+    image: ghcr.io/google/cadvisor:v0.60.6
+    ports:
+      - "8089:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg
+    command:
+      # docker_only keeps cardinality down: only compose containers are exported,
+      # not every host cgroup.
+      - --docker_only=true
+      - --housekeeping_interval=2s
+      # store_container_labels MUST be false for the whitelist to take effect --
+      # with it true, every compose/image label is exported instead.
+      - --store_container_labels=false
+      # Whitelist only the compose labels, so Prometheus can promote a stable
+      # `service` label (e.g. async-proxy-egress) instead of parsing container names.
+      - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "admin"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/etc/grafana/provisioning/dashboards/election-system-dashboard.json"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  grafana-data:
+  prometheus-data:
