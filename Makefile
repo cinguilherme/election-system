@@ -252,6 +252,10 @@ clean:
 export
 
 COMPOSE = docker compose -f docker-compose.yaml -f docker-compose.observability.yaml
+# Images are built and pushed from a compose set that includes the load file too:
+# k6 is a service in docker-compose.load.yaml, and `docker compose build k6`
+# against the core+observability set fails with "no such service: k6".
+COMPOSE_IMAGES = docker compose -f docker-compose.yaml -f docker-compose.observability.yaml -f docker-compose.load.yaml
 REGISTRY ?= 192.168.15.29:5001
 KEEP ?= 10
 # Tag by commit so every image is traceable back to the source that produced it.
@@ -280,7 +284,7 @@ IMAGES = election-system-async-proxy election-system election-system-api-lb \
          election-system-grafana election-system-k6
 
 images:
-	$(COMPOSE) build $(BUILT)
+	$(COMPOSE_IMAGES) build $(BUILT)
 	@printf '\ntagged $(REGISTRY)/<image>:$(TAG) for: $(IMAGES)\n'
 
 # Re-point images built under an older registry prefix (e.g. localhost:5001) at
@@ -300,7 +304,7 @@ push:
 	  docker image inspect "$(REGISTRY)/$$i:$(TAG)" >/dev/null 2>&1 || { \
 	    echo "missing $(REGISTRY)/$$i:$(TAG) -- run 'make images' first"; exit 1; }; \
 	done
-	$(COMPOSE) push $(BUILT)
+	$(COMPOSE_IMAGES) push $(BUILT)
 	@# Also move `latest` to this build. Without a moving tag, a worker that does
 	@# not know the commit asks for the default tag and gets "manifest unknown" --
 	@# which looks like a registry/network failure but is just a missing tag.
@@ -313,7 +317,7 @@ push:
 # On a worker: pull only what we built, then start. Public base images are pulled
 # by `up` itself.
 pull:
-	$(COMPOSE) pull $(BUILT)
+	$(COMPOSE_IMAGES) pull $(BUILT)
 
 prune:
 	KEEP=$(KEEP) ./scripts/registry-prune.sh --apply
