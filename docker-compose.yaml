@@ -99,6 +99,7 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+      start_period: 60s
     depends_on:
       - nats
       - valkey
@@ -216,6 +217,7 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+      start_period: 60s
     depends_on:
       postgres:
         condition: service_healthy
@@ -264,6 +266,7 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+      start_period: 60s
     depends_on:
       postgres:
         condition: service_healthy

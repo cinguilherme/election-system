@@ -266,12 +266,15 @@ clean:
 -include .env
 export
 
-# Target platform for builds AND runs. The lab's consumers are amd64 (Windows);
-# a Mac builds and runs the same architecture via emulation, so one value keeps
-# every machine on identical images. `buildx` manifest lists are the alternative
-# (see images-multi), but they cannot be loaded into the local Docker daemon,
-# which is why images/push stay single-platform.
-PLATFORM ?= linux/amd64
+# Default to native host architecture (linux/arm64 on Apple Silicon, linux/amd64
+# on x86_64) for local `make up` / `make up-build` so Colima does not run 9 JVM
+# containers under QEMU x86_64 emulation (which takes ~150s to boot Clojure and
+# crashes amd64 cAdvisor on ARM64 /proc/cpuinfo).
+# When building images for the Windows lab worker (`make images`), target
+# WORKER_PLATFORM (linux/amd64).
+HOST_ARCH := $(shell uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+PLATFORM ?= linux/$(HOST_ARCH)
+WORKER_PLATFORM ?= linux/amd64
 PLATFORMS ?= linux/amd64,linux/arm64
 export DOCKER_DEFAULT_PLATFORM = $(PLATFORM)
 
@@ -307,9 +310,10 @@ IMAGES = election-system-async-proxy election-system election-system-api-lb \
          election-system-proxy-gateway election-system-prometheus \
          election-system-grafana election-system-k6
 
-images: ensure-base
-	$(COMPOSE_IMAGES) build $(BUILT)
-	@printf '\ntagged $(REGISTRY)/<image>:$(TAG) for: $(IMAGES)\n'
+images:
+	$(MAKE) PLATFORM=$(WORKER_PLATFORM) ensure-base
+	DOCKER_DEFAULT_PLATFORM=$(WORKER_PLATFORM) $(COMPOSE_IMAGES) build $(BUILT)
+	@printf '\ntagged $(REGISTRY)/<image>:$(TAG) for: $(IMAGES) ($(WORKER_PLATFORM))\n'
 
 # Re-point images built under an older registry prefix (e.g. localhost:5001) at
 # the current one. The registry host is part of the image NAME, so changing the
