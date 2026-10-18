@@ -9,6 +9,11 @@ services:
     build:
       context: ..
       dockerfile: election-system/observability/k6/Dockerfile
+      # No provenance/SBOM attestation: buildx otherwise adds an
+      # `unknown/unknown` manifest to the index, which containerd 2.x can
+      # mishandle over an insecure (HTTP) registry -- observed as
+      # "short read: expected 32bytes but got 0: unexpected EOF".
+      provenance: false
     profiles: ["load"]
     environment: &k6-env
       API_URL: "http://election-api:8080"

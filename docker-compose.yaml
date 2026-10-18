@@ -71,6 +71,11 @@ services:
     build:
       context: ..
       dockerfile: d-core-async-proxy/Dockerfile
+      # No provenance/SBOM attestation: buildx otherwise adds an
+      # `unknown/unknown` manifest to the index, which containerd 2.x can
+      # mishandle over an insecure (HTTP) registry -- observed as
+      # "short read: expected 32bytes but got 0: unexpected EOF".
+      provenance: false
     environment:
       PORT: "4000"
       GRPC_PORT: "50051"
@@ -196,6 +201,11 @@ services:
     build:
       context: ..
       dockerfile: election-system/observability/nginx/Dockerfile
+      # No provenance/SBOM attestation: buildx otherwise adds an
+      # `unknown/unknown` manifest to the index, which containerd 2.x can
+      # mishandle over an insecure (HTTP) registry -- observed as
+      # "short read: expected 32bytes but got 0: unexpected EOF".
+      provenance: false
     ports:
       - "50051:50051"
       - "50052:50052"
@@ -228,6 +238,11 @@ services:
     build:
       context: ..
       dockerfile: election-system/Dockerfile
+      # No provenance/SBOM attestation: buildx otherwise adds an
+      # `unknown/unknown` manifest to the index, which containerd 2.x can
+      # mishandle over an insecure (HTTP) registry -- observed as
+      # "short read: expected 32bytes but got 0: unexpected EOF".
+      provenance: false
     environment:
       ROLE: "actors"
       METRICS_PORT: "8081"
@@ -479,6 +494,11 @@ services:
     build:
       context: ..
       dockerfile: election-system/docker/nginx/Dockerfile
+      # No provenance/SBOM attestation: buildx otherwise adds an
+      # `unknown/unknown` manifest to the index, which containerd 2.x can
+      # mishandle over an insecure (HTTP) registry -- observed as
+      # "short read: expected 32bytes but got 0: unexpected EOF".
+      provenance: false
     restart: unless-stopped
     ports:
       - "8080:8080"

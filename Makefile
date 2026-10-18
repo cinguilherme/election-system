@@ -5,10 +5,14 @@ build-base:
 	@echo "Building shared base image d-core-base:latest..."
 	docker build -t d-core-base:latest -f Dockerfile.base .
 
+# The base image must match the target platform: an arm64 base silently produces
+# arm64 children, which is exactly how an amd64 host ends up with "no match for
+# linux/amd64 in the manifest list".
 ensure-base:
-	@if [ -z "$$(docker images -q d-core-base:latest 2>/dev/null)" ]; then \
-		echo "Base image d-core-base:latest not found. Building it now..."; \
-		$(MAKE) build-base; \
+	@arch=$$(docker image inspect d-core-base:latest --format '{{.Os}}/{{.Architecture}}' 2>/dev/null || echo none); \
+	if [ "$$arch" != "$(PLATFORM)" ]; then \
+	  echo "Base image is $$arch, need $(PLATFORM). Rebuilding..."; \
+	  $(MAKE) build-base; \
 	fi
 
 tests:
@@ -251,6 +255,15 @@ clean:
 -include .env
 export
 
+# Target platform for builds AND runs. The lab's consumers are amd64 (Windows);
+# a Mac builds and runs the same architecture via emulation, so one value keeps
+# every machine on identical images. `buildx` manifest lists are the alternative
+# (see images-multi), but they cannot be loaded into the local Docker daemon,
+# which is why images/push stay single-platform.
+PLATFORM ?= linux/amd64
+PLATFORMS ?= linux/amd64,linux/arm64
+export DOCKER_DEFAULT_PLATFORM = $(PLATFORM)
+
 COMPOSE = docker compose -f docker-compose.yaml -f docker-compose.observability.yaml
 # Images are built and pushed from a compose set that includes the load file too:
 # k6 is a service in docker-compose.load.yaml, and `docker compose build k6`
@@ -283,7 +296,7 @@ IMAGES = election-system-async-proxy election-system election-system-api-lb \
          election-system-proxy-gateway election-system-prometheus \
          election-system-grafana election-system-k6
 
-images:
+images: ensure-base
 	$(COMPOSE_IMAGES) build $(BUILT)
 	@printf '\ntagged $(REGISTRY)/<image>:$(TAG) for: $(IMAGES)\n'
 
@@ -331,6 +344,44 @@ registry-check:
 	  curl -sS -o /dev/null -w 'HTTP %{http_code}\n' "http://$(REGISTRY)/v2/" || \
 	  echo "unreachable -- check the IP, the firewall, and that the registry is running"
 	@curl -fsS "http://$(REGISTRY)/v2/_catalog" 2>/dev/null | head -c 300; echo
+
+# Publish images with buildx, without attestations.
+#
+# Two reasons this is the publish path rather than `compose build && push`:
+#   1. a multi-platform result cannot be loaded into the local daemon, so it has
+#      to push anyway;
+#   2. compose's `build.provenance: false` does not reach buildx here, and the
+#      attestation it adds shows up as an `unknown/unknown` entry in the index --
+#      which containerd 2.x can choke on over an insecure HTTP registry
+#      ("short read: expected 32bytes but got 0: unexpected EOF").
+# Use PLATFORMS=linux/amd64 for a single-arch push (default: amd64 + arm64).
+images-multi: ensure-base
+	@for spec in \
+	  "election-system/docker/nginx/Dockerfile election-system-api-lb" \
+	  "election-system/observability/nginx/Dockerfile election-system-proxy-gateway" \
+	  "election-system/observability/prometheus/Dockerfile election-system-prometheus" \
+	  "election-system/observability/grafana/Dockerfile election-system-grafana" \
+	  "election-system/observability/k6/Dockerfile election-system-k6" \
+	  "d-core-async-proxy/Dockerfile election-system-async-proxy" \
+	  "election-system/Dockerfile election-system"; do \
+	  df=$${spec%% *}; name=$${spec##* }; \
+	  echo "buildx $$name for $(PLATFORMS)"; \
+	  ( cd .. && docker buildx build --platform $(PLATFORMS) --provenance=false --sbom=false -f $$df \
+	    --build-arg BASE_IMAGE=d-core-base:latest \
+	    -t "$(REGISTRY)/$$name:$(TAG)" -t "$(REGISTRY)/$$name:latest" \
+	    --push . ) || exit 1; \
+	done
+	@echo "pushed multi-arch $(TAG) and latest"
+
+# Generate the thing you copy to a worker: the compose files with every `build:`
+# removed, so the machine only pulls. Leaving build contexts in place makes
+# compose resolve repo paths that do not exist there, which on Windows surfaces
+# as "GetFileAttributeEx: The system cannot find the file specified".
+worker-bundle:
+	./scripts/make-worker-bundle.sh dist/worker
+	@printf '\ncopy dist/worker/ to the worker, set REGISTRY in .env, then:\n'
+	@printf '  docker compose -f docker-compose.yaml -f docker-compose.observability.yaml pull\n'
+	@printf '  docker compose -f docker-compose.yaml -f docker-compose.observability.yaml up -d\n'
 
 # Print exactly what a worker machine needs.
 worker-env:

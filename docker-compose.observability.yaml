@@ -64,6 +64,11 @@ services:
     build:
       context: ..
       dockerfile: election-system/observability/prometheus/Dockerfile
+      # No provenance/SBOM attestation: buildx otherwise adds an
+      # `unknown/unknown` manifest to the index, which containerd 2.x can
+      # mishandle over an insecure (HTTP) registry -- observed as
+      # "short read: expected 32bytes but got 0: unexpected EOF".
+      provenance: false
     ports:
       - "9090:9090"
 
@@ -72,6 +77,11 @@ services:
     build:
       context: ..
       dockerfile: election-system/observability/grafana/Dockerfile
+      # No provenance/SBOM attestation: buildx otherwise adds an
+      # `unknown/unknown` manifest to the index, which containerd 2.x can
+      # mishandle over an insecure (HTTP) registry -- observed as
+      # "short read: expected 32bytes but got 0: unexpected EOF".
+      provenance: false
     environment:
       GF_SECURITY_ADMIN_USER: "admin"
       GF_SECURITY_ADMIN_PASSWORD: "admin"
