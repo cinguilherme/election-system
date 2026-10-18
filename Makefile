@@ -275,12 +275,32 @@ images:
 	$(COMPOSE) build $(BUILT)
 	@printf '\ntagged $(REGISTRY)/election-system-<service>:$(TAG)\n'
 
+# Re-point images built under an older registry prefix (e.g. localhost:5001) at
+# the current one. The registry host is part of the image NAME, so changing the
+# address in .env orphans every image built before the change -- retagging is
+# local metadata only, no rebuild.
+retag:
+	@for s in $(BUILT); do \
+	  src=$$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E "/election-system-$$s:$(TAG)$$" | grep -v "^$(REGISTRY)/" | head -1); \
+	  if [ -n "$$src" ]; then \
+	    docker tag "$$src" "$(REGISTRY)/election-system-$$s:$(TAG)" && echo "  $$src -> $(REGISTRY)/election-system-$$s:$(TAG)"; \
+	  fi; \
+	done
+
 push:
 	@for s in $(BUILT); do \
 	  docker image inspect "$(REGISTRY)/election-system-$$s:$(TAG)" >/dev/null 2>&1 || { \
 	    echo "missing $(REGISTRY)/election-system-$$s:$(TAG) -- run 'make images' first"; exit 1; }; \
 	done
 	$(COMPOSE) push $(BUILT)
+	@# Also move `latest` to this build. Without a moving tag, a worker that does
+	@# not know the commit asks for the default tag and gets "manifest unknown" --
+	@# which looks like a registry/network failure but is just a missing tag.
+	@for s in $(BUILT); do \
+	  docker tag "$(REGISTRY)/election-system-$$s:$(TAG)" "$(REGISTRY)/election-system-$$s:latest"; \
+	  docker push -q "$(REGISTRY)/election-system-$$s:latest" >/dev/null; \
+	done
+	@printf 'pushed %s and latest for %d service(s)\n' "$(TAG)" $(words $(BUILT))
 
 # On a worker: pull only what we built, then start. Public base images are pulled
 # by `up` itself.
