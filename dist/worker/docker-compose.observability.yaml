@@ -6,9 +6,11 @@ services:
 
   jaeger:
     image: jaegertracing/all-in-one:1.60
+    restart: unless-stopped
     environment:
       - COLLECTOR_OTLP_ENABLED=true
-      - MEMORY_MAX_TRACES=${JAEGER_MAX_TRACES:-50000}
+      - MEMORY_MAX_TRACES=${JAEGER_MAX_TRACES:-10000}
+      - GOMEMLIMIT=850MiB
     ports:
       - "16686:16686"
       - "4317:4317"

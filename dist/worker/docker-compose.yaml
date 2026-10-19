@@ -152,7 +152,7 @@ services:
       VALKEY_URI: "redis://valkey:6379"
       LEASE_TTL_MS: "15000"
       DRAIN_TIMEOUT_MS: "20000"
-      TOTAL_PARTITIONS: "${TOTAL_PARTITIONS:-16}"
+      TOTAL_PARTITIONS: "${TOTAL_PARTITIONS:-32}"
       ACTORS_REPLICAS: "${ACTORS_REPLICAS:-3}"
       WORKER_COUNT: "4"
       # Batch/write policy. BATCH_SIZE is a floor that a busy precinct may not
@@ -222,7 +222,7 @@ services:
       ASYNC_PROXY_HOST: "async-proxy-ingress"
       ASYNC_PROXY_GRPC_PORT: "50051"
       WORKER_COUNT: "8"
-      TOTAL_PARTITIONS: "${TOTAL_PARTITIONS:-16}"
+      TOTAL_PARTITIONS: "${TOTAL_PARTITIONS:-32}"
       DB_ENGINE: "postgres"
       JDBC_URL: "jdbc:postgresql://postgres:5432/election_db"
       DB_USER: "election"
@@ -236,7 +236,7 @@ services:
       OTEL_SERVICE_NAME: "election-api"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
       OTEL_SAMPLING_RATIO: "${OTEL_SAMPLING_RATIO:-0.05}"
-      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=60.0"
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
       interval: 2s
@@ -261,7 +261,7 @@ services:
       resources:
         limits:
           cpus: "1.00"
-          memory: 1536M
+          memory: 1024M
 
   election-api:
     image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-api-lb:${TAG:-latest}
