@@ -21,7 +21,91 @@ In the Election System benchmark, the actor-driven architecture achieved **over 
 
 ---
 
-## 2. End-to-End Architectural Layout
+## 2. Domain Model: How the Election Works & Auditability
+
+Beyond the underlying queuing and persistence technology, the election system implements a strict, verifiable election lifecycle based on three domain primitives: **Votes**, **Ballots**, and **Tallies**.
+
+### The Core Election Primitives
+
+1. **The Vote (Voter Intent & Eligibility)**:
+   * A vote represents an individual citizen's choice for a specific candidate within a defined election window (`opens_at` to `closes_at`).
+   * **Single-Vote Guarantee**: Every registered voter (`voter_id`) is strictly entitled to cast at most one ballot per election. 
+   * When a vote arrives at a precinct, the system validates the voting time window and verifies that `voter_id` has not yet voted. Any subsequent attempt with the same `voter_id` is immediately rejected with `:duplicate-vote`.
+
+2. **The Ballot (The Immutable Ledger of Record)**:
+   * A ballot is the persistent, tamper-evident physical record of a cast vote. It contains:
+     * `ballot_id`: Unique UUID issued to the voter as an electronic receipt.
+     * `election_id` & `precinct_id`: Geographic electoral partition.
+     * `voter_id`: Voter identification.
+     * `candidate_id`: Chosen candidate.
+     * `cast_at`: Exact UTC timestamp when the ballot was accepted.
+   * **Append-Only Immutability**: Ballots are stored in the database's `ballots` table with an unconditional uniqueness constraint: `UNIQUE (election_id, precinct_id, voter_id)`. Ballots can **never** be updated, overwritten, or deleted. Once written, a ballot is permanent.
+
+3. **The Tally (Hierarchical Rolling Projections)**:
+   * Tallies are not independent records of truth—they are **deterministic projections** computed over the immutable ballots.
+   * **Precinct Tally**: A localized scoreboard maintaining the running sum of votes for each candidate within that precinct, alongside reporting statistics (`total_votes`, `flushes`, `last_sequence`).
+   * **National Election Tally**: The top-level country-wide summary aggregating totals across all reporting precincts (`precincts_reporting`, `total_votes`, `tallies_json`).
+   * By keeping tallies as live in-memory projections, observers and citizens can monitor the election in real-time with sub-millisecond query latency without placing read locks on the voting booths.
+
+---
+
+### How the Election Works End-to-End
+
+```
+┌─────────────────┐       ┌───────────────────────────┐       ┌───────────────────────────┐
+│ Voter Submits   │       │ Precinct Validation       │       │ Hierarchical Projection   │
+│ Vote Intent     │ ────> │ • Check Voting Window     │ ────> │ • Update Precinct Tally   │
+│ (voter_id,      │       │ • Check :voted-ids Set    │       │ • Coalesce Delta Message  │
+│  candidate_id)  │       │ • Generate ballot_id      │       │ • Update National Tally   │
+└─────────────────┘       └─────────────┬─────────────┘       └─────────────┬─────────────┘
+                                        │                                   │
+                                        ▼                                   ▼
+                              ┌───────────────────┐               ┌───────────────────┐
+                              │ Append-Only Store │               │ Checkpoint Store  │
+                              │ Immutable Ballots │               │ Guarded Tallies   │
+                              │ (The Ground Truth)│               │ (Audit Watermark) │
+                              └───────────────────┘               └───────────────────┘
+```
+
+1. **Submission**: A voter submits their ballot payload via the election API.
+2. **Ingress & Receipt**: The API confirms payload validity, assigns an immutable `ballot-id` receipt, and returns `HTTP 202 Accepted` to the voter in under 2 milliseconds.
+3. **Precinct Enforcement**: The precinct holding ownership of the voter's polling district serializes the vote in its queue, asserts that the election is actively open, records the voter in its in-memory `:voted-ids` ledger, and increments its local candidate tallies.
+4. **Buffered Persistence**: The ballot is queued into an append-only persistence batch, guaranteeing that disk flushes are packed efficiently.
+5. **Delta Escalation**: At controlled intervals (every 200ms), the precinct bundles candidate incremental changes into a `:precinct-delta` message and dispatches it to the national tally aggregator.
+6. **National Rollup**: The national tally merges the precinct deltas, maintaining real-time election returns.
+
+---
+
+### How the System is Auditable (Cryptographic & Mathematical Verifiability)
+
+Electoral trust relies on mathematical verifiability: **Can the published election result be independently proven from the raw ballots?**
+
+1. **Ground-Truth Reconciliation (`query-db-audit`)**:
+   * The election database contains built-in audit reconciliation (`election-system.db.writer/query-db-audit`).
+   * At any moment (or during a post-election recount), an auditor can independently query the raw `ballots` table:
+     $$\text{Audited Tally}(c) = \sum_{b \in \text{ballots}} [b.\text{candidate\_id} = c]$$
+   * The audit query compares:
+     $$\sum \text{Raw Persisted Ballots} \equiv \sum \text{Precinct Tallies} \equiv \text{National Election Tally}$$
+   * If even a single ballot is dropped, duplicated, or miscounted by an in-memory node, the discrepancy is immediately detected because the raw ballots are the single source of truth.
+
+2. **End-to-End Voter Traceability**:
+   * Every voter receives their unique `ballot-id` upon casting their vote.
+   * Because ballots are stored immutably with `cast_at` and `ballot_id`, election officials can prove whether a specific ballot was included in the final precinct tally without compromising ballot secrecy.
+
+3. **Database-Level Double-Voting Defense**:
+   * Even in a catastrophic multi-node failure where an in-memory node loses state, the database schema enforces:
+     ```sql
+     UNIQUE (election_id, precinct_id, voter_id)
+     ```
+   * Any duplicate attempt that slips past an in-memory barrier is blocked by PostgreSQL constraint enforcement (`ON CONFLICT DO NOTHING`), guaranteeing zero duplicate ballots in the persistent audit trail.
+
+4. **Tamper-Evident Monotonic Fencing**:
+   * Stale or rogue worker nodes cannot inject unauthorized tally updates. Every tally flush is stamped with a monotonic `ownership_epoch` coordinated by consensus leases.
+   * If a partitioned or retired worker attempts an out-of-order write, the database guards (`WHERE ownership_epoch < EXCLUDED.ownership_epoch`) reject the modification, preserving audit integrity.
+
+---
+
+## 3. End-to-End Architectural Layout
 
 ```mermaid
 flowchart TD
@@ -115,7 +199,7 @@ flowchart TD
 
 ---
 
-## 3. How the 20x+ DB Write Compression is Achieved
+## 4. How the 20x+ DB Write Compression is Achieved
 
 Write compression is not a single trick; it is an architectural pipeline where each layer collapses a different dimension of database traffic.
 
@@ -175,7 +259,7 @@ Write compression is not a single trick; it is an architectural pipeline where e
 
 ---
 
-## 4. Visual Funnel: From 3,000 Votes/s to 35 SQL Stmts/s
+## 5. Visual Funnel: From 3,000 Votes/s to 35 SQL Stmts/s
 
 ```
 [3,000 HTTP Votes / sec]  (Voter traffic across 250 precincts)
@@ -221,7 +305,7 @@ Write compression is not a single trick; it is an architectural pipeline where e
 
 ---
 
-## 5. Read Path Decoupling (Actor-First Reads)
+## 6. Read Path Decoupling (Actor-First Reads)
 
 A vital architectural requirement for write compression is **decoupling read freshness from write frequency**:
 * In traditional systems, reads query the DB (`SELECT ... FROM election_tallies`), forcing the write path to persist immediately to maintain fresh numbers.
@@ -231,7 +315,7 @@ A vital architectural requirement for write compression is **decoupling read fre
 
 ---
 
-## 6. Monotonic Fencing & Split-Brain Protection
+## 7. Monotonic Fencing & Split-Brain Protection
 
 Under dynamic scaling, network partitions, or node failover, write batching must not introduce split-brain overwrites:
 1. **Valkey Leases & Monotonic Fencing Epoch:**
@@ -247,7 +331,7 @@ Under dynamic scaling, network partitions, or node failover, write batching must
 
 ---
 
-## 7. Observability Verification in Grafana
+## 8. Observability Verification in Grafana
 
 The compression ratio is measured in real-time in Prometheus and Grafana:
 
