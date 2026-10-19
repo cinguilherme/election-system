@@ -26,72 +26,78 @@ In the Election System benchmark, the actor-driven architecture achieved **over 
 ```mermaid
 flowchart TD
     subgraph Clients ["Ingress Clients & Load Generators"]
-        K6["k6 Distributed Load Generators\n(3,000 - 5,000+ votes/s)"]
-        Obs["Tally Observers\n(GET /elections/:id/tally)"]
+        K6["k6 Distributed Load Generators<br/>3,000 - 5,000+ votes/s"]
+        Obs["Tally Observers<br/>GET /elections/:id/tally"]
     end
 
     subgraph APITier ["API & Gateway Tier"]
-        NginxHTTP["Nginx HTTP Reverse Proxy\n(:8080)"]
+        NginxHTTP["Nginx HTTP Reverse Proxy (:8080)"]
         API1["election-api-backend #1"]
         API2["election-api-backend #2"]
         API3["election-api-backend #3"]
     end
 
     subgraph BrokerTier ["Decoupled Streaming & Lease Control Plane"]
-        NginxGRPC["async-proxy-gateway\n(gRPC LB :50051 / :50052)"]
-        Proxy1["async-proxy #1"]
-        Proxy2["async-proxy #2"]
-        Proxy3["async-proxy #3"]
-        NATS["NATS JetStream 2.10\nStream: proxy_election_votes\n32 Partitions (p00 - p31)"]
-        Valkey["Valkey 8 (Lease & Fencing)\n--appendonly yes --maxmemory-policy noeviction\nRendezvous Consistent Hashing"]
+        NginxGRPC["async-proxy-gateway<br/>gRPC LB :50051 / :50052"]
+        Proxy["async-proxy (3 Replicas)<br/>Credit-based fetch, bounded queue"]
+        NATS["NATS JetStream 2.10<br/>32 Partitions (p00 - p31)"]
+        Valkey["Valkey 8 (Lease & Fencing)<br/>Rendezvous Hashing, noeviction"]
     end
 
     subgraph ActorTier ["Stateful In-Memory Actor Tier (3 Replicas)"]
-        subgraph Actor1 ["election-actors Node 1 (p00 - p10)"]
-            P1["Precinct Actors\n(In-memory :voted-ids O(1) dedup)\n(:pending-ballots buffer: 200)"]
-        end
-        subgraph Actor2 ["election-actors Node 2 (p11 - p21)"]
-            P2["Precinct Actors\n(Multi-row flush)\n(Coalesced deltas: 200ms)"]
-        end
-        subgraph Actor3 ["election-actors Node 3 (p22 - p31)"]
-            P3["Precinct Actors"]
-            TallyActor["Parent :election-tally Actor\n(In-memory national state)\n(Flushes every 50 deltas)"]
-        end
+        P1["Precinct Actors (Shards p00-p10)<br/>O(1) in-memory dedup<br/>200-ballot buffer"]
+        P2["Precinct Actors (Shards p11-p21)<br/>Multi-row flush<br/>Coalesced deltas"]
+        P3["Precinct Actors (Shards p22-p31)<br/>O(1) in-memory dedup<br/>200-ballot buffer"]
+        TallyActor["Parent :election-tally Actor<br/>Live in-memory national aggregate<br/>Flushes every 50 deltas"]
     end
 
     subgraph StorageTier ["Constrained PostgreSQL 16 (0.75 CPU, 16 Pool)"]
-        DB_Ballots[("ballots table\n(Multi-Row batch inserts\n200 rows per SQL stmt)")]
-        DB_Precinct[("precinct_tallies table\n(Periodic checkpoint upsert\nguarded by ownership_epoch)")]
-        DB_Election[("election_tallies table\n(Aggregated summary upsert\nguarded by ownership_epoch)")]
+        DB_Ballots[("ballots table<br/>Multi-Row batch inserts<br/>200 rows per SQL stmt")]
+        DB_Precinct[("precinct_tallies table<br/>Periodic checkpoint upsert<br/>Guarded by ownership_epoch")]
+        DB_Election[("election_tallies table<br/>Aggregated summary upsert<br/>Guarded by ownership_epoch")]
     end
 
     %% Client paths
-    K6 -->|POST /elections/:id/votes\n(HTTP 202 Accepted)| NginxHTTP
-    Obs -->|GET /elections/:id/tally\n(0.1ms read)| NginxHTTP
-    NginxHTTP --> API1 & API2 & API3
+    K6 -->|"POST /votes (HTTP 202 Accepted)"| NginxHTTP
+    Obs -->|"GET /tally (0.1ms read)"| NginxHTTP
+    NginxHTTP --> API1
+    NginxHTTP --> API2
+    NginxHTTP --> API3
 
     %% API to Proxy
-    API1 & API2 & API3 -->|gRPC Unary Publish\nproxy.client.publish| NginxGRPC
-    NginxGRPC --> Proxy1 & Proxy2 & Proxy3
-    Proxy1 & Proxy2 & Proxy3 -->|Enqueue to Durable Partitions| NATS
+    API1 -->|"gRPC Unary Publish"| NginxGRPC
+    API2 -->|"gRPC Unary Publish"| NginxGRPC
+    API3 -->|"gRPC Unary Publish"| NginxGRPC
+    NginxGRPC --> Proxy
+    Proxy -->|"Enqueue to 32 Shards"| NATS
 
-    %% Lease validation
-    Proxy1 & Proxy2 & Proxy3 -.->|Validate Lease Token| Valkey
-    Actor1 & Actor2 & Actor3 -.->|Acquire & Renew Leases\nFencing Token| Valkey
+    %% Lease validation & coordination
+    Proxy -. "Validate Lease Token" .-> Valkey
+    P1 -. "Lease & Fencing" .-> Valkey
+    P2 -. "Lease & Fencing" .-> Valkey
+    P3 -. "Lease & Fencing" .-> Valkey
 
     %% Proxy to Actors
-    NATS -->|gRPC Server Streaming\nEgress :50052| Actor1 & Actor2 & Actor3
+    NATS -->|"gRPC Stream Pull"| P1
+    NATS -->|"gRPC Stream Pull"| P2
+    NATS -->|"gRPC Stream Pull"| P3
 
     %% Actor internal messaging
-    P1 & P2 & P3 -->|Coalesced :precinct-delta\n(at most every 200ms)| TallyActor
+    P1 -->|"Coalesced deltas (200ms)"| TallyActor
+    P2 -->|"Coalesced deltas (200ms)"| TallyActor
+    P3 -->|"Coalesced deltas (200ms)"| TallyActor
 
     %% Actor reads (Actor-First)
-    API1 & API2 & API3 -.->|Direct In-Memory Peek\nactor.peek_state (~0.1ms)| TallyActor
+    API1 -. "Actor-First Peek (0 DB reads)" .-> TallyActor
+    API2 -. "Actor-First Peek (0 DB reads)" .-> TallyActor
+    API3 -. "Actor-First Peek (0 DB reads)" .-> TallyActor
 
-    %% Database Writes
-    P1 & P2 & P3 ==>|1. Multi-Row INSERT Batch\n(1 stmt / 200 ballots)| DB_Ballots
-    P1 & P2 & P3 -.->|2. Periodic Checkpoint Upsert\n(Off hotpath: tick-max-age 10s)| DB_Precinct
-    TallyActor ==>|3. Summary Upsert\n(1 stmt / 50 deltas)| DB_Election
+    %% Database Writes (Compression Mechanics)
+    P1 == "1. Multi-Row INSERT (1 stmt / 200 ballots)" ==> DB_Ballots
+    P2 == "1. Multi-Row INSERT (1 stmt / 200 ballots)" ==> DB_Ballots
+    P3 == "1. Multi-Row INSERT (1 stmt / 200 ballots)" ==> DB_Ballots
+    P2 -. "2. Checkpoint Upsert (tick-max-age 10s)" .-> DB_Precinct
+    TallyActor == "3. Summary Upsert (1 stmt / 50 deltas)" ==> DB_Election
 
     %% Styling
     classDef client fill:#1e293b,stroke:#475569,stroke-width:1px,color:#f8fafc;
@@ -102,8 +108,8 @@ flowchart TD
 
     class K6,Obs client;
     class NginxHTTP,API1,API2,API3 api;
-    class NginxGRPC,Proxy1,Proxy2,Proxy3,NATS,Valkey broker;
-    class Actor1,Actor2,Actor3,P1,P2,P3,TallyActor actor;
+    class NginxGRPC,Proxy,NATS,Valkey broker;
+    class P1,P2,P3,TallyActor actor;
     class DB_Ballots,DB_Precinct,DB_Election storage;
 ```
 
