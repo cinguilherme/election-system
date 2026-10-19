@@ -107,6 +107,12 @@ Electoral trust relies on mathematical verifiability: **Can the published electi
 
 ## 3. End-to-End Architectural Layout
 
+![Election System Architecture & Write Compression Pipeline](assets/architecture-diagram.svg)
+
+> 💡 **Interactive Architecture & Live Simulator**: Open [`docs/architecture.html`](architecture.html) in any browser (or via GitHub Pages) to interact with the live traffic simulator slider, toggle between naive and batched modes, and inspect node parameters.
+
+### Component Relationship Graph
+
 ```mermaid
 flowchart TD
     subgraph Clients ["Ingress Clients & Load Generators"]
