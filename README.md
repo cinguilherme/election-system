@@ -2,6 +2,8 @@
 
 Distributed election tallying benchmark built on `d-core-actor-system` and `d-core-async-proxy` (NATS JetStream + Valkey partition leases + PostgreSQL).
 
+> 📐 **Architecture & DB Write Compression**: See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the visual architecture layout, layer-by-layer breakdown, and how the actor system achieved **over 20x DB write compression** during load testing.
+
 ---
 
 ## 1. Running Locally (Docker Compose)
