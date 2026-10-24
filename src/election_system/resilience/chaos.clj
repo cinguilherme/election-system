@@ -9,20 +9,33 @@
    When enabled, every decorator routes through one `ChaosController` and one
    `EventJournal` per node, so a fault injected on one boundary is visible in
    the same causal sequence as the operations around it."
-  (:require [d-core.chaos.controller :as ctrl]
+  (:require [clojure.string :as str]
+            [d-core.chaos.controller :as ctrl]
             [d-core.chaos.instrument :as inst]
-            [d-core.chaos.journal :as journal]))
+            [d-core.chaos.journal :as journal]
+            [d-core.core.metrics.tracing :as otel]))
 
 (def ^:private default-max-events 50000)
 
-(def ^:private journal-modes #{:full :off})
+(def ^:private journal-modes #{:full :meta :off})
+
+(defn trace-id-fn
+  "Returns a thunk resolving the current W3C trace id, so every journal event can be
+   joined to the span that produced it. Returns nil outside a span."
+  []
+  (fn []
+    (when-let [traceparent (otel/current-traceparent)]
+      (second (str/split (str traceparent) #"-")))))
 
 (defn make-runtime
   "Builds the chaos runtime for a node.
 
    Options:
      :enabled?           - master switch (default false)
-     :journal-mode       - :full (record events) or :off (inject faults, record nothing)
+     :journal-mode       - :full (payloads), :meta (shape only), :off (inject, record nothing)
+     :sample             - fraction of events retained, 0.0-1.0 (default 1.0)
+     :max-payload-chars  - payloads above this become an `:omitted-bytes` marker
+     :trace-fn           - `(fn [] trace-id)`; defaults to the current OTEL span
      :max-events         - journal ring-buffer size (default 50000)
      :instance-id        - node identity stamped on every journal event
      :rules              - optional pre-armed rules (tests, replay)
@@ -30,7 +43,8 @@
      :max-total-hits     - blast-radius cap; reaching it disables the controller
      :audit-max-entries  - audit ring size"
   [{:keys [enabled? journal-mode max-events instance-id rules
-           allowed-components max-total-hits audit-max-entries]
+           allowed-components max-total-hits audit-max-entries
+           sample max-payload-chars trace-fn]
     :or {enabled? false
          journal-mode :full
          max-events default-max-events}}]
@@ -47,8 +61,13 @@
                       allowed-components (assoc :allowed-components allowed-components)
                       max-total-hits (assoc :max-total-hits max-total-hits)
                       audit-max-entries (assoc :audit-max-entries audit-max-entries)))
-       :journal (when (= :full mode)
-                  (journal/make-journal {:max-events (long (or max-events default-max-events))}))
+       :journal (when (#{:full :meta} mode)
+                  (journal/make-journal
+                   (cond-> {:mode mode
+                            :max-events (long (or max-events default-max-events))}
+                     sample (assoc :sample (double sample))
+                     max-payload-chars (assoc :max-payload-chars (long max-payload-chars))
+                     true (assoc :trace-fn (or trace-fn (trace-id-fn))))))
        :journal-mode mode
        :instance-id instance-id})))
 

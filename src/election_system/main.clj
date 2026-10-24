@@ -20,6 +20,15 @@
         default-val))
     default-val))
 
+(defn- env-double
+  [k default-val]
+  (if-let [v (env-str k nil)]
+    (try
+      (Double/parseDouble v)
+      (catch Exception _
+        default-val))
+    default-val))
+
 (defn- env-bool
   [k default-val]
   (if-let [v (env-str k nil)]
@@ -128,8 +137,12 @@
      :chaos {:enabled? (env-bool "CHAOS_ENABLED" false)
              :admin-port (env-long "CHAOS_ADMIN_PORT" 8082)
              :admin-token (env-str "CHAOS_ADMIN_TOKEN" nil)
+             ;; :full keeps payloads (bounded), :meta keeps shape only, :off injects
+             ;; without recording. :sample trades fidelity for overhead.
              :journal-mode (-> (env-str "CHAOS_JOURNAL_MODE" "full") str/lower-case keyword)
              :max-events (env-long "CHAOS_MAX_EVENTS" 50000)
+             :sample (env-double "CHAOS_SAMPLE" 1.0)
+             :max-payload-chars (env-long "CHAOS_MAX_PAYLOAD_CHARS" 4000)
              :allowed-components (some->> (env-list "CHAOS_ALLOWED_COMPONENTS")
                                           (map #(keyword (str/lower-case %)))
                                           set

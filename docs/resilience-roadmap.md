@@ -249,19 +249,58 @@ curl -sX POST localhost:8088/api/faults -H "X-Chaos-Token: $CHAOS_TOKEN" \
 
 ### 4. Flight-recorder journal and cross-node correlation  `CHAOS` `SCALE`
 
-- [ ] Zero-cost path when disarmed (`enabled?` check before any allocation)
-- [ ] `meta` mode: no payloads, only component/op/target/status/duration
-- [ ] Sampling (`CHAOS_SAMPLE`), payload truncation with `:omitted-bytes`
-- [ ] `X-Experiment-Id` propagated through the actor envelope `:context` and OTEL spans;
+Status: **implemented** in `d-core-chaos` (recorder), `d-core-chaos-engine` (merged timeline)
+and the election-system API (request binding).
+
+- [x] Zero-cost path when disarmed (`enabled?` check before any allocation)
+- [x] `meta` mode: no payloads, only component/op/target/status/duration
+- [x] Sampling (`CHAOS_SAMPLE`), payload truncation with `:omitted-bytes`
+- [x] `X-Experiment-Id` propagated through the actor envelope `:context` and OTEL spans;
       every journal event carries `:experiment-id`, `:instance-id`, `:trace-id`
-- [ ] `GET /api/experiments/:id/journal` merges all replicas by
+- [x] `GET /api/experiments/:id/journal` merges all replicas by
       `(timestamp, instance-id, seq)` with clock-skew detection
+
+**As built**
+
+| Piece | Where |
+| :-- | :-- |
+| `execute-instrumented!` is now a macro: disarmed expands to a bare `(thunk)`, so the `call-ctx` form is never evaluated | `d-core-chaos/src/d_core/chaos/controller.clj` |
+| Modes `:full`/`:meta`, `:sample`, `:max-payload-chars`, O(1) ring, counters | `d-core-chaos/src/d_core/chaos/journal.clj` |
+| `*experiment-id*`; envelope context injection on send, binding on delivery | `d-core-chaos/src/d_core/chaos/instrument.clj` |
+| `:now-ms` + journal mode/counters on `/_chaos/status`; `experiment-id` journal filter | `d-core-chaos/src/d_core/chaos/http.clj` |
+| Timeline merge, skew reporting, unreachable nodes | `d-core-chaos-engine/src/d_core/chaos_engine/journal.clj` |
+| `GET /api/experiments/:id/journal` fan-out | `d-core-chaos-engine/src/d_core/chaos_engine/engine.clj`, `…/http.clj` |
+| API binds `X-Experiment-Id`; `CHAOS_SAMPLE` / `CHAOS_MAX_PAYLOAD_CHARS`; OTEL trace id | `election-system/src/election_system/api/routes.clj`, `resilience/chaos.clj`, `main.clj` |
+| Tests | `d-core-chaos/test/…/flight_recorder_test.clj` (12), engine `journal_test.clj` (5) + 2 |
+
+Verified:
+- **Disarmed is free**: a `call-ctx` expression that throws is never evaluated when the
+  controller is disabled (`(execute-instrumented! disabled j (boom) (fn [] 42))` → `42`, journal
+  empty, counters `{:recorded 0 :sampled-out 0 :truncated 0}`).
+- `:meta` drops `:args`/`:result` but keeps `:component :op :target :status :row-count
+  :duration-ms`; `:sample 0.0` records nothing and counts 20 `:sampled-out`; a 200-char bound
+  turns a payload into `{:omitted-bytes n :preview "…"}`; a 3-slot ring keeps seq `[3 4 5]`.
+- Live two-node smoke: events recorded out of order on two real admin planes merged to
+  `[200 300]` with `:instances` spans, `:sequence-violations 0`, per-node
+  `:clock-skew-ms {1ms, 3ms}`, and the `?experiment-id=` filter excluded the unrelated event.
+- Suites: `d-core-chaos` 35 / 151, `d-core-chaos-engine` 35 / 132, `election-system` 39 / 207.
+
+Deviations / notes:
+- The experiment id is **not** yet written as an OTEL span attribute; journal events carry the
+  span's trace id (`:trace-id`) but span tagging lands with the reports/annotations of item 5,
+  where a span is the thing being annotated.
+- Clock skew is measured at discovery (`node now-ms` minus engine now) and therefore includes
+  half the round-trip; it is reported, never applied. `:skewed` names nodes past 250 ms.
+- `:replica` numbering is by `(host, port)`; `:instance-id` remains the selector that survives a
+  restart.
+- Remaining acceptance gap: the 1,000 events/s *load* measurement (same gap as item 1's p99) —
+  run under `make chaos-load` once item 5 exists.
 
 **Done when.** 1,000 events/s with chaos disarmed allocates nothing for the journal; one
 experiment yields a single merged timeline across 3 actor + 3 API replicas with zero
-interleaving violations.
+interleaving violations. — disarmed-cost and merge verified; the 6-replica load run is open.
 
-**Effort** 2–3 w. **Risk** medium.
+**Effort** 2–3 w (spent: ~1 d). **Risk** medium.
 
 ### 5. Experiments, steady state, SLOs and reports  `TEST` `SCALE`
 

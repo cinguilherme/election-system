@@ -5,6 +5,7 @@
   (:require [cheshire.core :as json]
             [clojure.string :as str]
             [d-core.actor-system.core :as actor]
+            [d-core.chaos.journal :as chaos-journal]
             [d-core.core.circuit-breaker.protocol :as cb]
             [d-core.core.metrics.prometheus :as prom]
             [d-core.core.metrics.protocol :as metrics-proto]
@@ -293,6 +294,17 @@
         (str/replace #"^/v1/elections/[^/]+/(votes|tally|audit)$"
                      "/v1/elections/:election-id/$1"))))
 
+(defn wrap-experiment-context
+  "Binds `X-Experiment-Id` for the duration of the request.
+
+   Everything the request does -- its SQL, its effect handlers, and the actor
+   messages it sends (the client copies the bound id into the envelope context) --
+   is attributed to that experiment in every node's journal."
+  [handler]
+  (fn [req]
+    (binding [chaos-journal/*experiment-id* (get-in req [:headers "x-experiment-id"])]
+      (handler req))))
+
 (defn make-handler
   "Creates the Ring handler for the Election System API Ingress service."
   [{:keys [metrics prom-metrics health-registry] :as ctx}]
@@ -326,8 +338,11 @@
                                ["/precincts/:precinct-id/flush" {:post {:handler (handle-flush-precinct enriched-ctx)}}]
                                ["/precincts/:precinct-id/tally" {:get {:handler (handle-precinct-tally enriched-ctx)}}]]]))
                       (ring/create-default-handler))
-        traced-handler (otel/wrap-http-tracing base-handler {:service "election-api"
-                                                             :normalize-uri-fn normalize-election-uri})]
+        ;; Inside tracing, so the journal event and the span it belongs to are
+        ;; recorded from the same request context.
+        experiment-handler (wrap-experiment-context base-handler)
+        traced-handler (otel/wrap-http-tracing experiment-handler {:service "election-api"
+                                                                   :normalize-uri-fn normalize-election-uri})]
     (if eff-metrics
       (wrappers/wrap-http-metrics traced-handler eff-metrics {:service "election-api"
                                                              :normalize-uri-fn normalize-election-uri})

@@ -24,8 +24,11 @@
 #   docker compose -f docker-compose.yaml -f docker-compose.observability.yaml up -d
 #
 # CHAOS_JOURNAL_MODE:
-#   full  record every instrumented operation (default; needed by /_chaos/journal)
+#   full  record every instrumented operation with bounded payloads (default)
+#   meta  record identity/shape only -- no payloads, no results
 #   off   inject faults, record nothing (lowest overhead, for long load+chaos runs)
+# CHAOS_SAMPLE keeps a fraction of events (1.0 = all); CHAOS_MAX_PAYLOAD_CHARS
+# replaces anything larger with an {:omitted-bytes n} marker.
 #
 # CHAOS_ALLOWED_COMPONENTS narrows what a rule may target; a component outside the
 # list is rejected with 422 instead of armed. CHAOS_MAX_TOTAL_HITS is the blast
@@ -69,6 +72,8 @@ services:
       CHAOS_ADMIN_TOKEN: "${CHAOS_TOKEN:?set CHAOS_TOKEN (any random string) before using the chaos overlay}"
       CHAOS_JOURNAL_MODE: "${CHAOS_JOURNAL_MODE:-full}"
       CHAOS_MAX_EVENTS: "${CHAOS_MAX_EVENTS:-50000}"
+      CHAOS_SAMPLE: "${CHAOS_SAMPLE:-1.0}"
+      CHAOS_MAX_PAYLOAD_CHARS: "${CHAOS_MAX_PAYLOAD_CHARS:-4000}"
       CHAOS_ALLOWED_COMPONENTS: "${CHAOS_ALLOWED_COMPONENTS:-db,actor-transport,actor-client,actor-delivery,actor-effect,snapshot,lease,circuit-breaker}"
       CHAOS_MAX_TOTAL_HITS: "${CHAOS_MAX_TOTAL_HITS:-100000}"
     expose:
@@ -81,6 +86,8 @@ services:
       CHAOS_ADMIN_TOKEN: "${CHAOS_TOKEN:?set CHAOS_TOKEN (any random string) before using the chaos overlay}"
       CHAOS_JOURNAL_MODE: "${CHAOS_JOURNAL_MODE:-full}"
       CHAOS_MAX_EVENTS: "${CHAOS_MAX_EVENTS:-50000}"
+      CHAOS_SAMPLE: "${CHAOS_SAMPLE:-1.0}"
+      CHAOS_MAX_PAYLOAD_CHARS: "${CHAOS_MAX_PAYLOAD_CHARS:-4000}"
       CHAOS_ALLOWED_COMPONENTS: "${CHAOS_ALLOWED_COMPONENTS:-db,actor-transport,actor-client,actor-delivery,actor-effect,snapshot,lease,circuit-breaker}"
       CHAOS_MAX_TOTAL_HITS: "${CHAOS_MAX_TOTAL_HITS:-100000}"
     expose:

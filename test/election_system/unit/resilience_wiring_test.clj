@@ -4,6 +4,8 @@
    actors tier gets real health checks."
   (:require [cheshire.core :as json]
             [clojure.test :refer [deftest is testing]]
+            [d-core.chaos.journal :as chaos-journal]
+            [election-system.api.routes :as routes]
             [d-core.actor-system.protocols :as actor-p]
             [d-core.core.databases.protocols.simple-sql :as sql]
             [d-core.core.leader-election.protocol :as lease-p]
@@ -203,3 +205,45 @@
           (testing "owning nothing degrades rather than failing"
             (is (= "degraded"
                    (get-in (body (h (req :get "/health"))) [:components :owning-partitions :status])))))))))
+
+;; ============================================================================
+;; Flight recorder wiring (roadmap item 4)
+;; ============================================================================
+
+(deftest journal-modes-are-wired
+  (testing ":meta builds a journal that keeps shape, not payloads"
+    (let [rt (chaos/make-runtime {:enabled? true :journal-mode :meta})]
+      (is (= :meta (:journal-mode rt)))
+      (is (= :meta (chaos-journal/mode (:journal rt))))))
+
+  (testing ":off injects without recording"
+    (let [rt (chaos/make-runtime {:enabled? true :journal-mode :off})]
+      (is (nil? (:journal rt)))
+      (is (= :off (:journal-mode rt)))))
+
+  (testing "sampling and payload bounds are passed through"
+    (let [rt (chaos/make-runtime {:enabled? true :journal-mode :full
+                                  :sample 0.25 :max-payload-chars 128})]
+      (is (= 0.25 (:sample (:journal rt))))
+      (is (= 128 (:max-payload-chars (:journal rt))))))
+
+  (testing "an unknown mode falls back to :full"
+    (let [rt (chaos/make-runtime {:enabled? true :journal-mode :bogus})]
+      (is (= :full (:journal-mode rt))))))
+
+(deftest the-api-binds-the-experiment-header
+  (let [seen (atom ::unbound)
+        handler (routes/wrap-experiment-context
+                 (fn [_req]
+                   (reset! seen chaos-journal/*experiment-id*)
+                   {:status 200}))]
+    (handler {:headers {"x-experiment-id" "exp-1"}})
+    (is (= "exp-1" @seen))
+    (testing "and leaves it nil when the header is absent"
+      (handler {:headers {}})
+      (is (nil? @seen)))))
+
+(deftest the-trace-thunk-resolves-a-span-or-nil
+  (let [f (chaos/trace-id-fn)]
+    (is (fn? f))
+    (is (nil? (f)))))

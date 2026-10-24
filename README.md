@@ -74,6 +74,19 @@ docker compose exec election-system-election-actors-1 sh -c \
   'curl -s -H "X-Chaos-Token: $CHAOS_ADMIN_TOKEN" http://127.0.0.1:8082/_chaos/status'
 ```
 
+Each node keeps a flight recorder (`CHAOS_JOURNAL_MODE=full|meta|off`, `CHAOS_SAMPLE`) and
+attributes its events to an experiment. Send `X-Experiment-Id` with the traffic you want to
+correlate and the API binds it for the request; the actor client copies it into the envelope
+context, so every step it touches records it. Ask the engine for the merged view:
+
+```bash
+curl -s "localhost:8088/api/experiments/$EXP_ID/journal" -H "X-Chaos-Token: $CHAOS_TOKEN" \
+  | jq '{instances, "violations": .["sequence-violations"], "skew": .["clock-skew-ms"]}'
+```
+
+The reply is one timeline ordered by `(timestamp, node, seq)` with per-replica spans, clock
+skew and unreachable replicas named.
+
 With `CHAOS_ENABLED` unset (the default stack) no decorator, journal or admin port exists.
 Roadmap and trade-offs: [docs/resilience-roadmap.md](docs/resilience-roadmap.md).
 
