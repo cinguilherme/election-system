@@ -1,0 +1,3 @@
+{:hooks {:analyze-call {d-core.stateflow.core/flow hooks.stateflow/flow
+                        state-flow.core/flow hooks.stateflow/flow
+                        state-flow.api/flow hooks.stateflow/flow}}}

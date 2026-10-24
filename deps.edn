@@ -12,6 +12,7 @@
         ;; coordination substrate, and putting leases in the election database
         ;; would make them contend with the tally writes they are meant to guard.
         org.clojars.cinguilherme/d-core-leader-election {:local/root "../d-core-leader-election"}
+        org.clojars.cinguilherme/d-core-chaos {:local/root "../d-core-chaos"}
 
         ;; Clojure Core & Async
         org.clojure/clojure {:mvn/version "1.12.3"}
@@ -34,7 +35,10 @@
  :aliases
  {:test
   {:extra-paths ["test"]
-   :extra-deps {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1"
+   :extra-deps {org.clojars.cinguilherme/d-core-stateflow {:local/root "../d-core-stateflow"}
+                nubank/state-flow {:mvn/version "2.2.4"}
+                nubank/matcher-combinators {:mvn/version "1.2.7"}
+                io.github.cognitect-labs/test-runner {:git/tag "v0.5.1"
                                                       :git/sha "dfb30dd"}}
    :main-opts ["-m" "cognitect.test-runner"]}
   :lint

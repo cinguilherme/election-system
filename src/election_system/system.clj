@@ -9,6 +9,10 @@
             [d-core.actor-system.storage.sql-adapter :as sql-adapter]
             [d-core.actor-system.system]
             [d-core.actor-system.transport.async-proxy :as ap-transport]
+            [d-core.chaos.controller :as chaos-ctrl]
+            [d-core.chaos.http :as chaos-http]
+            [d-core.chaos.instrument :as chaos-inst]
+            [d-core.chaos.journal :as chaos-journal]
             [d-core.circuit-breaker.in-memory :as cb-mem]
             [d-core.core.clients.postgres.client :as pg-client]
             [d-core.core.clients.sqlite.client :as sqlite-client]
@@ -547,8 +551,11 @@
    1. Constrained SQL database (SQLite default, or provided Postgres/MySQL `db` + `engine`)
    2. `d-core-async-proxy` gRPC server (hosting message queues, subscription registry, and sharding router)
    3. `N` dedicated sharded Actor Worker runtimes (`0 .. worker-count-1`), each connected to `async-proxy` over gRPC
-   4. API Ingress node (with its own `ActorClient` connected to `async-proxy` over gRPC and Ring handler)"
-  [{:keys [db engine worker-count assigned-partitions total-partitions batch-size flush-every-n opens-at closes-at election-id]
+   4. API Ingress node (with its own `ActorClient` connected to `async-proxy` over gRPC and Ring handler)
+   5. Unified `ChaosController` and `EventJournal` instrumenting SQL, ActorTransport, SnapshotStore, EffectHandler, and CircuitBreakers."
+  [{:keys [db engine worker-count assigned-partitions total-partitions batch-size flush-every-n
+           opens-at closes-at election-id chaos-controller event-journal tell-interval-ms
+           tick-min-batch tick-max-age-ms cb-failure-threshold cb-reset-timeout-ms]
     :or {worker-count 2
          batch-size 50
          flush-every-n 5
@@ -558,15 +565,20 @@
         tmp-file (when-not db (java.io.File/createTempFile "election-system-" ".db"))
         sqlite-c (when tmp-file
                    (sqlite-client/make-client {:jdbc-url (str "jdbc:sqlite:" (.getAbsolutePath tmp-file))}))
-        actual-db (or db
-                      (ig/init-key :d-core.core.databases.sqlite/db
-                                   {:sqlite-client sqlite-c
-                                    :storage-schema schema/storage-schema}))
-        _ (schema/create-tables! actual-db (or engine :sqlite))
+        raw-db (or db
+                   (ig/init-key :d-core.core.databases.sqlite/db
+                                {:sqlite-client sqlite-c
+                                 :storage-schema schema/storage-schema}))
+        _ (schema/create-tables! (chaos-inst/unwrap raw-db) (or engine :sqlite))
+        journal (or event-journal (chaos-journal/make-journal))
+        controller (or chaos-controller (chaos-ctrl/make-controller))
+        actual-db (chaos-inst/instrument-sql raw-db controller journal {:instance-id "cluster-db"})
         {:keys [prom-registry prom-metrics]} (init-prometheus false)
         metrics-atom (writer/make-write-metrics)
-        effect-handler (writer/make-effect-handler actual-db metrics-atom nil prom-metrics)
-        snapshot-store (sql-adapter/create-sql-snapshot-store actual-db)
+        raw-effect-handler (writer/make-effect-handler actual-db metrics-atom nil prom-metrics)
+        effect-handler (chaos-inst/instrument-effect-handler raw-effect-handler controller journal {:instance-id "actor-effects"})
+        raw-snapshot-store (sql-adapter/create-sql-snapshot-store (chaos-inst/unwrap raw-db))
+        snapshot-store (chaos-inst/instrument-snapshot-store raw-snapshot-store controller journal {:instance-id "snapshot-store"})
         in-proc-name (str "election-async-proxy-" (random-uuid))
         queues (ig/init-key :d-core.queue/in-memory-queues {:topics [:default]})
         im-producer (im-prod/->InMemoryProducer queues nil)
@@ -585,14 +597,19 @@
                                      :opens-at opens-at
                                      :closes-at closes-at
                                      :batch-size batch-size
-                                     :flush-every-n flush-every-n})
+                                     :flush-every-n flush-every-n
+                                     :tick-min-batch tick-min-batch
+                                     :tick-max-age-ms tick-max-age-ms
+                                     :tell-interval-ms tell-interval-ms})
         workers (mapv (fn [idx]
-                        (let [t (ap-transport/create-async-proxy-transport
-                                 {:transport :in-process
-                                  :in-process-name in-proc-name
-                                  :partition idx
-                                  :partitions tot-partitions
-                                  :poll-ms 5})
+                        (let [raw-t (ap-transport/create-async-proxy-transport
+                                     {:transport :in-process
+                                      :in-process-name in-proc-name
+                                      :partition idx
+                                      :partitions tot-partitions
+                                      :poll-ms 5})
+                              t (chaos-inst/instrument-actor-transport raw-t controller journal
+                                                                       {:instance-id (str "worker-" idx)})
                               rt (actor-core/start-runtime
                                   {:transport t
                                    :storage snapshot-store
@@ -607,25 +624,34 @@
                               read-subs (subscribe-read-lane! t rt entities idx tot-partitions)]
                           {:partition idx
                            :transport t
+                           :raw-transport raw-t
                            :runtime rt
                            :read-subs read-subs}))
                       assigned)
-        ingress-transport (ap-transport/create-async-proxy-transport
-                           {:transport :in-process
-                            :in-process-name in-proc-name
-                            :partitions tot-partitions})
-        actor-client (actor-core/create-client ingress-transport {:partitions tot-partitions
-                                                                  :timeout-ms 5000})
-        db-breaker (cb-mem/make-circuit-breaker
-                    {:name "election-db"
-                     :failure-threshold 5
-                     :reset-timeout-ms 5000
-                     :metrics prom-metrics})
-        transport-breaker (cb-mem/make-circuit-breaker
-                           {:name "election-async-proxy"
-                            :failure-threshold 5
-                            :reset-timeout-ms 5000
-                            :metrics prom-metrics})
+        raw-ingress-transport (ap-transport/create-async-proxy-transport
+                               {:transport :in-process
+                                :in-process-name in-proc-name
+                                :partitions tot-partitions})
+        ingress-transport (chaos-inst/instrument-actor-transport raw-ingress-transport controller journal
+                                                                 {:instance-id "api-ingress"})
+        raw-actor-client (actor-core/create-client ingress-transport {:partitions tot-partitions
+                                                                      :timeout-ms 5000})
+        actor-client (chaos-inst/instrument-actor-client raw-actor-client controller journal
+                                                         {:instance-id "api-ingress"})
+        raw-db-breaker (cb-mem/make-circuit-breaker
+                        {:name "election-db"
+                         :failure-threshold (or cb-failure-threshold 5)
+                         :reset-timeout-ms (or cb-reset-timeout-ms 5000)
+                         :metrics prom-metrics})
+        db-breaker (chaos-inst/instrument-circuit-breaker raw-db-breaker :election-db controller journal
+                                                          {:instance-id "api-ingress"})
+        raw-transport-breaker (cb-mem/make-circuit-breaker
+                               {:name "election-async-proxy"
+                                :failure-threshold (or cb-failure-threshold 5)
+                                :reset-timeout-ms (or cb-reset-timeout-ms 5000)
+                                :metrics prom-metrics})
+        transport-breaker (chaos-inst/instrument-circuit-breaker raw-transport-breaker :election-async-proxy controller journal
+                                                                 {:instance-id "api-ingress"})
         health-registry (health-reg/make-health-registry
                          {:service-name "election-api"
                           :metrics prom-metrics
@@ -638,16 +664,23 @@
                                    :liveness {:check-fn (fn [_] {:status :up})
                                               :critical? true
                                               :tags #{:liveness}}}})
-        api-handler (routes/make-handler {:actor-client actor-client
-                                          :db actual-db
-                                          :db-breaker db-breaker
-                                          :transport-breaker transport-breaker
-                                          :health-registry health-registry
-                                          :metrics-atom metrics-atom
-                                          :prom-metrics prom-metrics
-                                          :prom-registry prom-registry
-                                          :timeout-ms 5000})]
+        base-api-handler (routes/make-handler {:actor-client actor-client
+                                               :db actual-db
+                                               :db-breaker db-breaker
+                                               :transport-breaker transport-breaker
+                                               :health-registry health-registry
+                                               :metrics-atom metrics-atom
+                                               :prom-metrics prom-metrics
+                                               :prom-registry prom-registry
+                                               :timeout-ms 5000})
+        api-handler (chaos-http/wrap-chaos-admin base-api-handler {:controller controller
+                                                                   :journal journal})]
      {:db actual-db
+      :raw-db (chaos-inst/unwrap raw-db)
+      :chaos-controller controller
+      :event-journal journal
+      :journal journal
+      :chaos controller
       :db-breaker db-breaker
       :transport-breaker transport-breaker
       :health-registry health-registry
@@ -657,19 +690,21 @@
       :prom-registry prom-registry
       :prom-metrics prom-metrics
       :snapshot-store snapshot-store
+      :effect-handler effect-handler
       :proxy-server proxy-server
       :proxy-registry proxy-registry
       :workers workers
       :ingress-transport ingress-transport
+      :raw-ingress-transport raw-ingress-transport
       :actor-client actor-client
       :api-handler api-handler}))
 
 (defn stop-multi-tier-test-cluster!
-  [{:keys [workers ingress-transport proxy-server proxy-registry tmp-file]}]
-  (doseq [{:keys [runtime transport]} workers]
+  [{:keys [workers ingress-transport raw-ingress-transport proxy-server proxy-registry tmp-file]}]
+  (doseq [{:keys [runtime transport raw-transport]} workers]
     (actor-core/stop-runtime! runtime)
-    (ap-transport/close-async-proxy-transport! transport))
-  (ap-transport/close-async-proxy-transport! ingress-transport)
+    (ap-transport/close-async-proxy-transport! (or raw-transport (chaos-inst/unwrap transport))))
+  (ap-transport/close-async-proxy-transport! (or raw-ingress-transport (chaos-inst/unwrap ingress-transport)))
   (ig/halt-key! :d-core-async-proxy.grpc/server proxy-server)
   (ig/halt-key! :d-core-async-proxy.subscriptions/registry proxy-registry)
   (when tmp-file

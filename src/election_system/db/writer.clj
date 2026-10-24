@@ -32,9 +32,15 @@
     (wrappers/with-sql-metrics prom-metrics sql-inst opts f)
     (f)))
 
+(defn- unwrap-db
+  [db]
+  (if (and (map? db) (contains? db :delegate))
+    (recur (:delegate db))
+    db))
+
 (defn- detect-engine
   [db]
-  (let [cls-name (some-> db class .getName)]
+  (let [cls-name (some-> (unwrap-db db) class .getName)]
     (cond
       (and cls-name (.contains cls-name "PostgresDatabase")) :postgres
       (and cls-name (.contains cls-name "MySQLDatabase")) :mysql
