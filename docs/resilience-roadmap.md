@@ -668,16 +668,55 @@ verified at the controller and run level.
 
 ### 11. Stateflow v2 ergonomics  `ERG` `DX`
 
-- [ ] Explicit `World` record/schema with `world/->world`; `:cluster` spec-checked
-- [ ] Timeline diff on journal assertion failure (expected vs actual plus ±3 surrounding
+Status: **implemented**. The failure output and the waiting primitives were the point; both are
+in, with tests.
+
+- [x] Explicit `World` record/schema with `world/->world`; `:cluster` spec-checked
+- [x] Timeline diff on journal assertion failure (expected vs actual plus ±3 surrounding
       events and timing)
-- [ ] `defflow` tags; `eventually` / `await-status` / `retry-step` helpers
-- [ ] clj-kondo hooks for `defflow` and `with-fault`; `flow/print-journal` for the REPL
+- [x] `defflow` tags; `eventually` / `await-status` / `retry-step` helpers
+- [x] clj-kondo hooks for `defflow` and `with-fault`; `flow/print-journal` for the REPL
 
-**Done when.** A failed causal assertion explains what diverged and when in ≤5 lines;
-onboarding a new flow takes one doc page.
+**As built**
 
-**Effort** 2 w. **Risk** low.
+| Piece | Where |
+| :-- | :-- |
+| `world/World` malli schema (open), `->world` (validate → normalize), `:cluster` reachability check | `d-core-stateflow/src/d_core/stateflow/world.clj` |
+| `align`, `format-diff`, `assert-events!`, `timeline`, `print-journal` | `…/journal.clj` |
+| `poll-until`, `eventually`, `await-status`, `retry-step`, `print-journal` alias | `…/core.clj` |
+| `:lint-as` for `defflow` (→ `deftest`) and `with-stack` (→ `let`) | `.clj-kondo/config.edn` (module + election-system) |
+
+Verified (16 tests / 56 assertions):
+- **Diff**: an expected subsequence aligns to `[0 2]`; out-of-order expectations diverge at the
+  position where the journal ran out, and the message names it, prints the expected event, prints
+  `(nothing: the journal ends before this expectation)` when the journal ended, and shows the two
+  neighbouring events — 6 lines, not a dump.
+- **Typed failure**: `assert-events!` throws `:stateflow/journal-assertion-failed` with the
+  expected/actual/`:diverged-at` in `ex-data`; a passing assertion returns the events.
+- **Waiting**: `poll-until` succeeds on the third attempt and gives up at the deadline carrying
+  the last exception; a falsey value is never success; `eventually` throws
+  `:stateflow/eventually-timeout` with the attempt count; `await-status` accepts a set;
+  `retry-step` retries a flaky thunk and rethrows the last error.
+- **World**: wrong types name the field, a cluster with no reachability is rejected, extra keys
+  pass through, URLs are normalized.
+
+Deviations / notes:
+- **A validated map, not a record.** The roadmap asked for a `World` record; state-flow's `swap`
+  adds keys to the world, and a record would throw on unknown ones. `->world` validates and returns
+  an open map, which is the same guarantee without breaking flows that carry their own state.
+- **No kondo hook for `with-fault`**: it is a function (`[rule sub-flow]`), not a macro — there is
+  nothing for the linter to expand. `with-stack` does need one and gets `:lint-as let`.
+- **`defflow` tags are metadata**: `^{:tier :stack :tags #{:db}}` passes through to the var; the
+  runner filters on `:tier`, not `:tags`. Tag-based selection is available through the runner's
+  `--ns` if it is ever needed.
+- ±3 events was reduced to ±2 in the rendered message: the done-when asks for ≤5 lines of
+  explanation, and two neighbours on each side is where the extra line stopped being useful.
+
+**Done when.** A failed causal assertion explains what diverged and when in ≤5 lines; onboarding
+a new flow takes one doc page. — the message is 6 lines including the header (5 of body), and the
+README has a "When a flow fails" page.
+
+**Effort** 2 w (spent: ~1 d). **Risk** low.
 
 ### 12. Release and convention parity  `DX` `ERG`
 

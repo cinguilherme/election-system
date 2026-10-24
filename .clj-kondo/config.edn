@@ -1,3 +1,5 @@
-{:hooks {:analyze-call {d-core.stateflow.core/flow hooks.stateflow/flow
+{:lint-as {d-core.stateflow.core/defflow clojure.test/deftest
+            d-core.stateflow.stack/with-stack clojure.core/let}
+ :hooks {:analyze-call {d-core.stateflow.core/flow hooks.stateflow/flow
                         state-flow.core/flow hooks.stateflow/flow
                         state-flow.api/flow hooks.stateflow/flow}}}
