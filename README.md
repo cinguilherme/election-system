@@ -59,7 +59,7 @@ docker compose exec election-system-election-actors-1 sh -c \
 ```
 
 With `CHAOS_ENABLED` unset (the default stack) no decorator, journal or admin port exists.
-Roadmap and trade-offs: [../docs/resilience-roadmap.md](../docs/resilience-roadmap.md).
+Roadmap and trade-offs: [docs/resilience-roadmap.md](docs/resilience-roadmap.md).
 
 ---
 
