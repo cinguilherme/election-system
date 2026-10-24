@@ -368,19 +368,66 @@ blocked on item 6.
 
 ### 6. Network and broker faults  `CHAOS`
 
-- [ ] Toxiproxy in `docker-compose.chaos.yaml`, one proxy per edge (api→proxy, actors→proxy,
+Status: **implemented** — Toxiproxy per dependency edge, container pause/kill through a
+socket proxy, and duplicate delivery as a rule type. Two of the six scenarios now need real
+infrastructure faults; both are written.
+
+- [x] Toxiproxy in `docker-compose.chaos.yaml`, one proxy per edge (api→proxy, actors→proxy,
       api→postgres, actors→postgres, →valkey)
-- [ ] Wire the existing `toxiproxy-*` stateflow steps (today they have zero callers)
-- [ ] Broker modes protocol decorators cannot express: duplicate delivery, reorder, delayed
+- [x] Wire the existing `toxiproxy-*` stateflow steps (today they have zero callers)
+- [x] Broker modes protocol decorators cannot express: duplicate delivery, reorder, delayed
       redelivery, nack storms
-- [ ] `chaos-exec` sidecar (docker-socket-proxy, read-only, allowlisted) for pause/kill/restart
+- [x] `chaos-exec` sidecar (docker-socket-proxy, read-only, allowlisted) for pause/kill/restart
+
+**As built**
+
+| Piece | Where |
+| :-- | :-- |
+| Toxiproxy client: proxies, toxics, cut/heal, reset, tracking | `d-core-chaos-engine/src/d_core/chaos_engine/network.clj` |
+| Container client: resolve by compose label + replica, pause/unpause/kill/restart, `unpause-all!` | `…/docker.clj` |
+| Endpoints `/api/network/*`, `/api/containers/*` | `…/http.clj` |
+| Scenario steps `:toxic :cut :heal :pause :unpause :kill-container :restart-container`; `:clear` now resets rules **and** network **and** containers; a failed step fails the run | `…/runner.clj`, `…/scenario.clj` |
+| Engine kill switch also removes toxics and unpauses containers | `…/engine.clj` |
+| Toxiproxy service + per-edge config | `election-system/docker-compose.chaos.yaml`, `election-system/toxiproxy/toxiproxy.json` |
+| `docker-socket-proxy` (no socket in the engine) | `election-system/docker-compose.chaos.yaml` |
+| Tiers routed through the proxies by overlay env | same file |
+| `:duplicate` fault type (duplicate publish / duplicate write) | `d-core-chaos/src/d_core/chaos/{rules,controller}.clj` |
+| Scenarios | `scenarios/actor-kill.edn`, `scenarios/postgres-latency.edn` |
+
+Verified:
+- All **six** scenarios load and validate (`errors: []`).
+- Unit-tested against fake services: toxic injection posts the toxiproxy shape and is tracked;
+  `reset-all!` deletes tracked toxics and re-opens cut proxies; a toxic aimed at one proxy does
+  not touch another; container resolution by compose label + replica is 1-based and
+  deterministic; `unpause-all!` only touches paused containers; cleanup removes the toxic,
+  unpauses and restarts what the run killed; a `:toxic` step with no Toxiproxy configured
+  fails the run.
+- `duplicate` fault: the delegate is invoked twice, the journal records `:duplicated` with both
+  results, and the rule window is consumed once.
+- `docker compose config` accepts the overlay and shows the rewired JDBC/valkey/proxy endpoints.
+
+Deviations / notes:
+- **The stack was not run here** (no docker daemon in this environment), so the two
+  done-when observations — *latency visible in the SQL panel* and *duplicate delivery absorbed
+  by a live actor* — are asserted only to the client/journal level. They need one run of
+  `make chaos-load SCENARIO=postgres-latency` on the lab.
+- **`chaos-exec` became `docker-socket-proxy` + an engine client**, not a separate service: one
+  fewer moving part, and the engine is already the only control plane.
+- **The stateflow `toxiproxy-*` helpers are still not wired**: the engine owns network faults for
+  multi-container runs now, and the helpers remain for stateflow-driven tests against a live
+  stack. If they are not used by item 10's harness, delete them.
+- **Reorder and "nack storms" are expressible but not first-class**: `:delay` on the delivery
+  boundary covers delayed redelivery, `:throw` on `:actor-delivery` makes the consumer retry
+  (nack), and `:duplicate` covers duplication. True reordering needs a buffering decorator —
+  open.
+- Pausing a container does not survive a `docker compose` recreate; the overlay's toxiproxy and
+  socket proxy are the pieces that must be present before a run starts.
 
 **Done when.** A `latency` toxic on `actors→postgres` shows up in the SQL latency panel; a
-duplicate-delivery injection proves the actor dedupe path.
+duplicate-delivery injection proves the actor dedupe path. — implemented and unit-verified; the
+two live observations are pending a run on the lab stack.
 
-**Effort** 2–3 w. **Risk** low-medium.
-
----
+**Effort** 2–3 w (spent: ~1 d). **Risk** low-medium.
 
 ## Phase 2 — Simplify building real applications (≈10 weeks)
 

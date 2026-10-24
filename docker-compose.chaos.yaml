@@ -38,6 +38,34 @@
 # it resolves a service to its replicas over the compose network, so the nodes never
 # publish 8082 and the operator never addresses a container by name.
 services:
+  # One proxy per dependency edge, so a fault can be aimed at "actors -> postgres"
+  # without touching "api -> postgres". The tiers are pointed at these listeners by
+  # the environment overrides below; without a toxic they are a plain TCP relay.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    command: ["-host", "0.0.0.0", "-config", "/config/toxiproxy.json"]
+    volumes:
+      - ./toxiproxy/toxiproxy.json:/config/toxiproxy.json:ro
+    ports:
+      # Management API: useful for poking at proxies by hand.
+      - "8474:8474"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8474/version"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # The only component with access to the docker socket. It is a narrow TCP view of
+  # the API (containers + POST), so the engine can pause/kill without mounting the
+  # socket itself.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.2
+    environment:
+      CONTAINERS: "1"
+      POST: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
   chaos-engine:
     image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-chaos-engine:${TAG:-latest}
     build:
@@ -60,6 +88,8 @@ services:
       CHAOS_SCENARIOS_DIR: "/workspace/scenarios"
       CHAOS_REPORTS_DIR: "/workspace/reports"
       CHAOS_PROMETHEUS_URL: "http://prometheus:9090"
+      CHAOS_TOXIPROXY_URL: "http://toxiproxy:8474"
+      CHAOS_DOCKER_URL: "http://docker-socket-proxy:2375"
       GRAFANA_URL: "${GRAFANA_URL:-http://grafana:3000}"
     volumes:
       - ./scenarios:/workspace/scenarios:ro
@@ -75,6 +105,11 @@ services:
 
   election-actors:
     environment:
+      # Every dependency the actors own goes through its own proxy.
+      JDBC_URL: "jdbc:postgresql://toxiproxy:15433/election_db"
+      ASYNC_PROXY_HOST: "toxiproxy"
+      ASYNC_PROXY_GRPC_PORT: "15052"
+      VALKEY_URI: "redis://toxiproxy:16379"
       CHAOS_ENABLED: "1"
       CHAOS_ADMIN_PORT: "8082"
       CHAOS_ADMIN_TOKEN: "${CHAOS_TOKEN:?set CHAOS_TOKEN (any random string) before using the chaos overlay}"
@@ -89,6 +124,9 @@ services:
 
   election-api-backend:
     environment:
+      JDBC_URL: "jdbc:postgresql://toxiproxy:15432/election_db"
+      ASYNC_PROXY_HOST: "toxiproxy"
+      ASYNC_PROXY_GRPC_PORT: "15051"
       CHAOS_ENABLED: "1"
       CHAOS_ADMIN_PORT: "8082"
       CHAOS_ADMIN_TOKEN: "${CHAOS_TOKEN:?set CHAOS_TOKEN (any random string) before using the chaos overlay}"

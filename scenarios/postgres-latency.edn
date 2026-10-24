@@ -1,0 +1,50 @@
+;; 500 ms of latency, with jitter, on the actors -> postgres edge only.
+;;
+;; Batch flushes slow down; the national tally is unaffected because the API edge has
+;; its own proxy. The invariant is that the ledger reconciles once the delay is
+;; removed -- slow writes are acceptable, lost or duplicated ones are not.
+;;
+;; This is the scenario the SQL latency panel should show; run it with load.
+{:name "postgres-latency"
+ :description "500ms latency on actors->postgres; writes slow down but must reconcile"
+ :settle-ms 15000
+ :timeout-ms 180000
+
+ :steady-state
+ [{:id :traffic-flowing
+   :type :prometheus
+   :query "sum(increase(election_votes_cast_total{status=\"accepted\"}[1m]))"
+   :assert [{:path [] :op :gt :value 0}]}
+
+  {:id :audit-consistent-before
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:consistent?] :op :eq :value true}]}]
+
+ :steps
+ [{:action :toxic
+   :after-ms 0
+   :proxy "actors-postgres"
+   :toxic {:type :latency
+           :stream :downstream
+           :attributes {:latency 500 :jitter 100}}}
+
+  {:action :clear
+   :after-ms 15000}]
+
+ :invariants
+ [{:id :ledger-has-ballots
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:db-audit :ballot-count] :op :gt :value 0}]}
+
+  {:id :audit-consistent-after
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:consistent?] :op :eq :value true}
+            {:path [:db-audit :ballot-tallies] :op :sum-eq
+             :value-path [:db-audit :ballot-count]}]}
+
+  {:id :no-faults-left
+   :type :faults
+   :assert [{:path [:count] :op :eq :value 0}]}]}

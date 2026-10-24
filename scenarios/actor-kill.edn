@@ -1,0 +1,53 @@
+;; Kill one actor replica outright.
+;;
+;; SIGKILL, not a graceful stop: the leases it held are not resigned, so the
+;; survivors only learn it is gone when the TTL expires and the hold-off passes.
+;; The runner restarts the container during cleanup -- a killed container stays dead
+;; in this compose file, and leaving it that way would turn a chaos run into an
+;; outage.
+{:name "actor-kill"
+ :description "SIGKILL one actor replica; survivors must take over and the ledger must survive"
+ :settle-ms 25000
+ :timeout-ms 180000
+
+ :steady-state
+ [{:id :traffic-flowing
+   :type :prometheus
+   :query "sum(increase(election_votes_cast_total{status=\"accepted\"}[1m]))"
+   :assert [{:path [] :op :gt :value 0}]}
+
+  {:id :ownership-complete-before
+   :type :prometheus
+   :query "sum(election_partitions_total) - sum(election_leaders_held)"
+   :assert [{:path [] :op :lte :value 0}]}]
+
+ :steps
+ [{:action :kill-container
+   :after-ms 0
+   :service "election-actors"
+   :replica 1}
+
+  {:action :clear
+   :after-ms 20000}]
+
+ :invariants
+ [{:id :ownership-complete-after
+   :type :prometheus
+   :query "sum(election_partitions_total) - sum(election_leaders_held)"
+   :assert [{:path [] :op :lte :value 0}]}
+
+  {:id :ledger-has-ballots
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:db-audit :ballot-count] :op :gt :value 0}]}
+
+  {:id :audit-consistent-after
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:consistent?] :op :eq :value true}
+            {:path [:db-audit :ballot-tallies] :op :sum-eq
+             :value-path [:db-audit :ballot-count]}]}
+
+  {:id :no-faults-left
+   :type :faults
+   :assert [{:path [:count] :op :eq :value 0}]}]}

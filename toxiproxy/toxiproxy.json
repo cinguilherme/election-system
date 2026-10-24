@@ -1,0 +1,32 @@
+[
+  {
+    "name": "api-postgres",
+    "listen": "0.0.0.0:15432",
+    "upstream": "postgres:5432",
+    "enabled": true
+  },
+  {
+    "name": "actors-postgres",
+    "listen": "0.0.0.0:15433",
+    "upstream": "postgres:5432",
+    "enabled": true
+  },
+  {
+    "name": "api-proxy",
+    "listen": "0.0.0.0:15051",
+    "upstream": "async-proxy-gateway:50051",
+    "enabled": true
+  },
+  {
+    "name": "actors-proxy",
+    "listen": "0.0.0.0:15052",
+    "upstream": "async-proxy-gateway:50051",
+    "enabled": true
+  },
+  {
+    "name": "actors-valkey",
+    "listen": "0.0.0.0:16379",
+    "upstream": "valkey:6379",
+    "enabled": true
+  }
+]

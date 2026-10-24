@@ -109,8 +109,20 @@ invariant breaks; the report (`/api/runs/:id/report`, or the JSON/JUnit files in
 | `db-outage` | reads fail → the API breaker trips, then recovers on its own |
 | `lease-blackhole` | renewals are lost → partitions move, then ownership is whole again |
 | `transport-drop` | precinct→tally tells are dropped → the projection must converge |
+| `actor-kill` | SIGKILL one actor replica → survivors take over, ledger survives |
+| `postgres-latency` | 500 ms on actors→postgres only → writes slow, data reconciles |
 
-The kill/pause/latency/clock-skew scenarios need the infrastructure faults of roadmap item 6.
+`actor-kill` and `postgres-latency` need the infrastructure half of the overlay: Toxiproxy
+(one proxy per dependency edge) and a `docker-socket-proxy` for pause/kill. When the overlay is
+in use, the tiers reach their dependencies **through** the proxies (`toxiproxy:15432` for the
+API's postgres, `:15433` for the actors', `:15051/:15052` for the async-proxy, `:16379` for
+valkey); without a toxic they are a plain TCP relay. The engine never mounts the docker socket —
+the proxy exposes a narrow TCP view of it.
+
+```bash
+make chaos-load SCENARIO=postgres-latency   # watch SQL latency in Grafana while it runs
+make chaos-load SCENARIO=actor-kill         # a replica dies for real, then is restarted
+```
 
 With `CHAOS_ENABLED` unset (the default stack) no decorator, journal or admin port exists.
 Roadmap and trade-offs: [docs/resilience-roadmap.md](docs/resilience-roadmap.md).
