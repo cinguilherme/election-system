@@ -17,6 +17,9 @@
                             :reset-timeout-ms 200})
         health-registry (health-reg/make-health-registry
                          {:service-name "election-api"
+                          ;; this test asserts state changes immediately after
+                          ;; tripping/resetting the breaker
+                          :ttl-ms 0
                           :checks {:db {:component db-breaker
                                         :critical? true
                                         :tags #{:readiness}}

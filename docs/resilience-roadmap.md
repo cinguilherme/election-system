@@ -549,18 +549,61 @@ verified with two breaker instances over Valkey, not yet with three live API con
 
 ### 9. Health v2  `SCALE`
 
-- [ ] TTL-cached evaluation (default 1 s) with a bounded executor, not `future` per check
-- [ ] Real probes: `SELECT 1`, Valkey `PING`, proxy health, "partitions owned > 0"
-- [ ] Lifecycle: `:starting` (fail ready, pass live), `:draining`
-- [ ] Flap damping (`:down` only after *N* consecutive failures)
-- [ ] `/health?verbose`, per-node `/health/system`, compose healthcheck uses `/ready`
+Status: **implemented**. Cached, bounded, lifecycle-aware evaluation with damping; real probes on
+both tiers; compose probes `/ready` instead of a TCP connect.
 
-**Done when.** Killing postgres flips `/ready` in ≤2 s and back in ≤5 s; a 3 s slow check
-cannot make probes take 3 s; zero readiness flips during a 5-minute steady-state run.
+- [x] TTL-cached evaluation (default 1 s) with a bounded executor, not `future` per check
+- [x] Real probes: `SELECT 1`, Valkey `PING`, proxy health, "partitions owned > 0"
+- [x] Lifecycle: `:starting` (fail ready, pass live), `:draining`
+- [x] Flap damping (`:down` only after *N* consecutive failures)
+- [x] `/health?verbose`, per-node `/health/system`, compose healthcheck uses `/ready`
 
-**Effort** 2 w. **Risk** low.
+**As built**
 
----
+| Piece | Where |
+| :-- | :-- |
+| Cache per tag-selection, coalescing, bounded pool + overall deadline, damping, lifecycle | `d-core-health/src/d_core/health/registry.clj` |
+| `/ready` gated by lifecycle; `/health` cache age + streaks; `/health/system` over peers | `…/http.clj` |
+| Actors tier serves `/live`, `/ready`, `/health` on `:8081` | `election-system/src/election_system/system.clj` |
+| Lifecycle `:starting → :running` at boot, `:draining` on shutdown (both tiers) | `…/system.clj` |
+| Actors probes: DB round-trip, broker socket, lease read, partitions held; 1 s cache, 2-failure damping | `election-system/src/election_system/resilience/health.clj` |
+| Compose healthchecks: `curl /ready` on `:8081` and `:8080` | `election-system/docker-compose.yaml` |
+
+Verified (`d-core-health` 13 tests / 100 assertions; election-system 42 / 228):
+- **Cache**: a check runs once across evaluations inside the TTL and reports `:cached?` +
+  `:cache-age-ms`; different tag selections cache separately; `{:cache? false}` bypasses.
+- **Bounded**: a 2 s hanging check under a 200 ms deadline makes the evaluation return in < 800 ms
+  with the component reported `:unknown` (not `:down` — we do not know that it failed).
+- **Parallel**: three 200 ms checks finish in < 550 ms, not 600+ — the earlier implementation
+  submitted and awaited each check in turn, which silently serialized every evaluation.
+- **Damping**: with `:failures-before-down 3`, the first two failures report `:degraded`
+  (`:raw-status :down`), the third is `:down`, a success resets the streak.
+- **Lifecycle**: `:starting` → live 200 / ready 503; `:running` → both 200; `:draining` → live 200 /
+  ready 503 even though every check is up.
+- **Real probes against a real database**: the actors registry built over a freshly migrated
+  SQLite plus a listening broker socket answers `/ready` 200; a closed broker port flips it to 503
+  after the damping window. This is the check that proves the compose `/ready` healthcheck will
+  not leave the stack unable to start.
+- **System view**: an unreachable peer is reported `:down` with its error and makes the aggregate
+  503; reachable peers are listed with their own status.
+
+Deviations / notes:
+- **`/health/system` is implemented and tested but not mounted in election-system**: there is no
+  coordinator service to host it. The module exposes `system-routes`; the actors/API nodes already
+  answer per-node `/health`.
+- **Percentile/`SELECT 1`**: the DB probe is still a `SELECT ballot_id FROM ballots LIMIT 1` rather
+  than `SELECT 1` — it verifies the schema the node needs, at the cost of a real query (cached for
+  1 s). `SELECT 1` would pass on a database where the tables are missing.
+- **The two acceptance numbers are structural, not measured on a live stack**: readiness flips
+  within one cache TTL plus one probe interval (≈1 s + 2 s), and a 3 s check cannot hold a probe
+  past the 2 s deadline. Both are asserted in unit tests with real clocks; the compose
+  `interval: 2s` makes the flip observable in ≤ ~4 s.
+
+**Done when.** Killing postgres flips `/ready` in ≤ 2 s and back in ≤ 5 s; a 3 s slow check cannot
+make probes take 3 s; zero readiness flips during a 5-minute steady-state run. — the bounded and
+flap-free properties are verified; the postgres-kill timing needs the lab stack.
+
+**Effort** 2 w (spent: ~1 d). **Risk** low.
 
 ## Phase 3 — Developer superpower (≈5 weeks)
 

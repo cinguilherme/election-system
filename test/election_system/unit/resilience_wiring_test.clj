@@ -172,6 +172,9 @@
                     {:db (fake-sql)
                      :broker {:host "127.0.0.1" :port port}
                      :lease (fake-lease)
+                     ;; a node that has finished booting; lifecycle :starting is
+                     ;; covered by health-v2-test
+                     :lifecycle :running
                      :owned-fn (fn [] {:owned 2 :total 4})})
           handler (admin/make-handler {:role :actors
                                        :instance-id "actors-1"
@@ -201,6 +204,10 @@
                     {:db (fake-sql)
                      :broker {:host "127.0.0.1" :port 1}
                      :lease (fake-lease)
+                     :lifecycle :running
+                     ;; no damping here: this test asserts a single evaluation
+                     ;; (damped failures are covered by health-v2-test)
+                     :failures-before-down 1
                      :owned-fn (fn [] {:owned 0 :total 4})})
               h (admin/make-handler {:role :actors :health-registry down})]
           (is (= 200 (:status (h (req :get "/live")))))

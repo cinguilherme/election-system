@@ -77,26 +77,37 @@
      :broker           - {:host string :port long} of the async-proxy gRPC endpoint
      :lease            - raw lease component (nil when ownership is disabled)
      :owned-fn         - (fn [] {:owned n :total m})
-     :check-timeout-ms - per-check timeout"
-  [{:keys [service-name metrics logger db broker lease owned-fn check-timeout-ms]
+     :check-timeout-ms - per-check timeout
+     :ttl-ms           - evaluation cache TTL (default 1000)
+     :failures-before-down - consecutive failures before a check reports :down (default 2)
+     :lifecycle        - :starting while the node claims partitions, :running after"
+  [{:keys [service-name metrics logger db broker lease owned-fn check-timeout-ms
+           ttl-ms failures-before-down lifecycle]
     :or {service-name "election-actors"
-         check-timeout-ms default-check-timeout-ms}}]
-  (let [checks (cond-> {:liveness {:check-fn (fn [_] {:status :up})
+         check-timeout-ms default-check-timeout-ms
+         ttl-ms 1000
+         failures-before-down 2
+         lifecycle :starting}}]
+  (let [damping {:failures-before-down failures-before-down}
+        checks (cond-> {:liveness {:check-fn (fn [_] {:status :up})
                                    :critical? true
                                    :tags #{:liveness}}
-                        :db {:check-fn (db-check db)
-                             :critical? true
-                             :timeout-ms check-timeout-ms
-                             :tags #{:readiness}}
-                        :broker {:check-fn (broker-check (:host broker) (:port broker) check-timeout-ms)
-                                 :critical? true
-                                 :timeout-ms check-timeout-ms
-                                 :tags #{:readiness}}}
+                        :db (merge damping
+                                   {:check-fn (db-check db)
+                                    :critical? true
+                                    :timeout-ms check-timeout-ms
+                                    :tags #{:readiness}})
+                        :broker (merge damping
+                                       {:check-fn (broker-check (:host broker) (:port broker) check-timeout-ms)
+                                        :critical? true
+                                        :timeout-ms check-timeout-ms
+                                        :tags #{:readiness}})}
                  lease (assoc :lease-store
-                              {:check-fn (lease-store-check lease)
-                               :critical? true
-                               :timeout-ms check-timeout-ms
-                               :tags #{:readiness}})
+                              (merge damping
+                                     {:check-fn (lease-store-check lease)
+                                      :critical? true
+                                      :timeout-ms check-timeout-ms
+                                      :tags #{:readiness}}))
                  owned-fn (assoc :owning-partitions
                                  {:check-fn (partitions-check owned-fn)
                                   :critical? false
@@ -106,4 +117,6 @@
      {:service-name service-name
       :metrics metrics
       :logger logger
+      :ttl-ms ttl-ms
+      :lifecycle lifecycle
       :checks checks})))

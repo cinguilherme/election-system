@@ -26,6 +26,7 @@
             [d-core.core.metrics.tracing :as otel]
             [d-core.core.producers.common :as common-prod]
             [d-core.core.producers.in-memory :as im-prod]
+            [d-core.health.http :as health-http]
             [d-core.health.registry :as health-reg]
             [d-core.resilience.core :as resilience]
             [d-core.libs.time :as time]
@@ -223,11 +224,14 @@
         health-registry (health-reg/make-health-registry
                          {:service-name "election-api"
                           :metrics prom-metrics
+                          :ttl-ms 1000
                           :checks {:db {:component db-breaker
                                         :critical? true
+                                        :failures-before-down 2
                                         :tags #{:readiness}}
                                    :async-proxy {:component transport-breaker
                                                  :critical? true
+                                                 :failures-before-down 2
                                                  :tags #{:readiness}}
                                    :liveness {:check-fn (fn [_] {:status :up})
                                               :critical? true
@@ -286,7 +290,11 @@
 
 (defn stop-api-node!
   [{:keys [jetty-server ingress-transport raw-ingress-transport pg-client tmp-file tracer-ctx
-           admin-server]}]
+           admin-server health-registry]}]
+  ;; Draining first: readiness fails while the process is still serving, so a probe
+  ;; that arrives during shutdown takes the node out of rotation instead of
+  ;; reporting a healthy node that is about to disappear.
+  (when health-registry (health-reg/set-lifecycle! health-registry :draining))
   (res-admin/stop-server! admin-server)
   (when jetty-server
     (.stop ^org.eclipse.jetty.server.Server jetty-server))
@@ -300,11 +308,20 @@
     (.delete ^java.io.File tmp-file)))
 
 (defn- make-actors-metrics-handler
-  [prom-registry metrics-atom worker-count]
-  (let [scrape-handler (prom/ring-metrics-handler prom-registry)]
+  "The actors tier's only HTTP surface. `/metrics` for Prometheus, and the health
+   routes so a compose/K8s probe can ask whether this node is *ready* (consuming,
+   holding partitions) rather than whether a port is open."
+  [prom-registry metrics-atom worker-count health-registry]
+  (let [scrape-handler (prom/ring-metrics-handler prom-registry)
+        live-handler (health-http/make-live-handler health-registry)
+        ready-handler (health-http/make-ready-handler health-registry)
+        health-handler (health-http/make-health-handler health-registry)]
     (fn [request]
-      (if (= "/metrics" (:uri request))
-        (scrape-handler request)
+      (case (:uri request)
+        "/metrics" (scrape-handler request)
+        "/live" (live-handler request)
+        "/ready" (ready-handler request)
+        "/health" (health-handler request)
         {:status 200
          :headers {"Content-Type" "application/json; charset=utf-8"}
          :body (str "{\"status\":\"ok\",\"role\":\"actors\",\"workers\":" worker-count
@@ -606,7 +623,9 @@
                           :lease raw-lease
                           :owned-fn owned-fn})
 
-        metrics-handler (make-actors-metrics-handler prom-registry metrics-atom actual-workers-count)
+        _ (health-reg/set-lifecycle! health-registry :running)
+        metrics-handler (make-actors-metrics-handler prom-registry metrics-atom actual-workers-count
+                                                     health-registry)
         jetty-server (jetty/run-jetty metrics-handler {:port (int metrics-port) :join? false})
         admin-server (when (:enabled? chaos-rt)
                        (println (str "[chaos] enabled " (pr-str (res-chaos/describe chaos-rt))
@@ -645,7 +664,11 @@
    With leases enabled the manager owns the runtimes: it drains each partition,
    flushes its state, stops it and only then resigns, so a peer cannot start
    consuming a partition this node is still writing to."
-  [{:keys [jetty-server workers ownership-manager pg-client tmp-file tracer-ctx admin-server]}]
+  [{:keys [jetty-server workers ownership-manager pg-client tmp-file tracer-ctx admin-server
+           health-registry]}]
+  ;; Draining before the manager releases partitions: the node is still answering
+  ;; `/live` but no longer claims to be ready, so traffic moves before ownership does.
+  (when health-registry (health-reg/set-lifecycle! health-registry :draining))
   (res-admin/stop-server! admin-server)
   (when jetty-server
     (.stop ^org.eclipse.jetty.server.Server jetty-server))
@@ -773,11 +796,14 @@
         health-registry (health-reg/make-health-registry
                          {:service-name "election-api"
                           :metrics prom-metrics
+                          :ttl-ms 1000
                           :checks {:db {:component db-breaker
                                         :critical? true
+                                        :failures-before-down 2
                                         :tags #{:readiness}}
                                    :async-proxy {:component transport-breaker
                                                  :critical? true
+                                                 :failures-before-down 2
                                                  :tags #{:readiness}}
                                    :liveness {:check-fn (fn [_] {:status :up})
                                               :critical? true

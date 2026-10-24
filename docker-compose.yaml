@@ -213,11 +213,13 @@ services:
       OTEL_SAMPLING_RATIO: "${OTEL_SAMPLING_RATIO:-0.05}"
       JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=75.0"
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081"]
+      # Readiness, not "the port is open": the node is healthy only when it can
+      # reach its database, broker and lease store and holds partitions.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/ready"]
       interval: 2s
-      timeout: 3s
+      timeout: 5s
       retries: 30
-      start_period: 60s
+      start_period: 90s
     depends_on:
       postgres:
         condition: service_healthy
@@ -262,11 +264,11 @@ services:
       OTEL_SAMPLING_RATIO: "${OTEL_SAMPLING_RATIO:-0.05}"
       JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=1 -XX:MaxRAMPercentage=60.0"
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/ready"]
       interval: 2s
-      timeout: 3s
+      timeout: 5s
       retries: 30
-      start_period: 60s
+      start_period: 90s
     depends_on:
       postgres:
         condition: service_healthy

@@ -87,6 +87,27 @@ curl -s "localhost:8088/api/experiments/$EXP_ID/journal" -H "X-Chaos-Token: $CHA
 The reply is one timeline ordered by `(timestamp, node, seq)` with per-replica spans, clock
 skew and unreachable replicas named.
 
+### Health and lifecycle
+
+Every tier answers three different questions:
+
+| Endpoint | Question | Fails when |
+| :-- | :-- | :-- |
+| `/live` | should I be restarted? | a `:liveness` check fails |
+| `/ready` | should I receive traffic? | the node is `:starting`/`:draining`, or a `:readiness` check is `:down` |
+| `/health` | what exactly is wrong? | — (diagnostic; `?verbose=true` for cache age and failure streaks) |
+
+The actors tier now serves these on its metrics port (`:8081`) and has real probes — a
+`SELECT ballot_id FROM ballots LIMIT 1`, a TCP connect to the async-proxy, a lease-store read, and
+"do I hold partitions". The compose healthcheck uses `/ready` for both tiers instead of a TCP
+connect, so a container that cannot reach its database is unhealthy rather than merely listening.
+
+Evaluation is cached (1 s) and bounded: checks run in parallel on a small pool under one
+deadline, so a hanging database makes `/ready` answer `:unknown` in about the deadline instead of
+hanging the probe. A check reporting `:down` must fail twice in a row before readiness flips —
+one blip does not move traffic. On shutdown the node switches to `:draining` first, so it leaves
+rotation while it is still answering.
+
 ### Circuit breakers and the shared signal
 
 The API's db and transport guards come from one policy map (`d-core-resilience`): timeout,
