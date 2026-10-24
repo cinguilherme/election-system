@@ -33,6 +33,34 @@ make down
 
 For profiling (`async-profiler`), cAdvisor throttling queries, and metric/trace details, see [observability/README.md](observability/README.md).
 
+### Chaos / Fault Injection (opt-in)
+
+The resiliency layer (`d-core-chaos`, `d-core-health`, `d-core-circuit-breaker`) ships in every
+image but stays inert. It is enabled only by the `docker-compose.chaos.yaml` overlay:
+
+```bash
+export CHAOS_TOKEN=$(openssl rand -hex 16)
+make chaos-up          # stack + observability + internal admin plane
+make chaos-status      # /_chaos/status from every replica
+make chaos-down
+```
+
+Every API and actors replica then exposes an **internal** admin plane on `:8082`
+(`/_chaos/status`, `/_chaos/rules`, `/_chaos/journal`, plus `/live`, `/ready`, `/health` with
+real dependency probes). The port is not published to the host and is not routed by the API
+load balancer.
+
+```bash
+# The next lease renewal on this replica answers "lost".
+docker compose exec election-system-election-actors-1 sh -c \
+  'curl -s -H "X-Chaos-Token: $CHAOS_ADMIN_TOKEN" -X POST http://127.0.0.1:8082/_chaos/rules \
+       -H "content-type: application/json" \
+       -d "{\"id\":\"lease-blackhole\",\"component\":\"lease\",\"op\":\"renew!\",\"times\":1,\"fault\":{\"type\":\"return\",\"return\":{\"status\":\"lost\"}}}"'
+```
+
+With `CHAOS_ENABLED` unset (the default stack) no decorator, journal or admin port exists.
+Roadmap and trade-offs: [../docs/resilience-roadmap.md](../docs/resilience-roadmap.md).
+
 ---
 
 ## 2. Running on a Remote Windows Worker (Lab Load Testing)

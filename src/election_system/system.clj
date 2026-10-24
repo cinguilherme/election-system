@@ -38,6 +38,9 @@
             [election-system.db.writer :as writer]
             [election-system.membership :as membership]
             [election-system.ownership :as own]
+            [election-system.resilience.admin :as res-admin]
+            [election-system.resilience.chaos :as res-chaos]
+            [election-system.resilience.health :as res-health]
             [integrant.core :as ig]
             [ring.adapter.jetty :as jetty]))
 
@@ -155,15 +158,26 @@
 
 (defn start-api-node
   "Starts a dedicated Election API container node connected to `d-core-async-proxy` over gRPC
-   and backed by SQL for `/audit` queries and Prometheus `/metrics`."
-  [{:keys [http-port proxy-host proxy-grpc-port worker-count total-partitions db-opts timeout-ms max-threads]
+   and backed by SQL for `/audit` queries and Prometheus `/metrics`.
+
+   When `:chaos` enables the chaos runtime, SQL/transport/client/breaker calls are
+   instrumented and an internal admin listener is opened (`:admin-port`, default 8082).
+   With chaos disabled nothing is wrapped and no extra listener exists."
+  [{:keys [http-port proxy-host proxy-grpc-port worker-count total-partitions db-opts timeout-ms max-threads
+           chaos]
     :or {http-port 8080
          proxy-host "localhost"
          proxy-grpc-port 50051
          timeout-ms 10000
          max-threads 120}}]
-  (let [tot-partitions (long (or total-partitions worker-count 4))
+  (let [chaos-cfg (or chaos {})
+        chaos-rt (res-chaos/make-runtime
+                  (assoc chaos-cfg :instance-id (or (:instance-id chaos-cfg)
+                                                    (res-chaos/default-instance-id))))
+        tot-partitions (long (or total-partitions worker-count 4))
         {:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
+        raw-db db
+        db (res-chaos/instrument-db chaos-rt raw-db)
         {:keys [prom-registry prom-metrics]} (init-prometheus true)
         tracer-ctx (otel/init-tracer {:service-name (or (System/getenv "OTEL_SERVICE_NAME") "election-api")})
         ;; Report the name the tracer actually registered. Spans from this process
@@ -173,16 +187,22 @@
                         " endpoint=" (or (System/getenv "OTEL_EXPORTER_OTLP_ENDPOINT") "none")
                         " sampling=" (or (System/getenv "OTEL_SAMPLING_RATIO") "1.0")))
         metrics-atom (writer/make-write-metrics)
-        db-breaker (cb-mem/make-circuit-breaker
-                    {:name "election-db"
-                     :failure-threshold 5
-                     :reset-timeout-ms 5000
-                     :metrics prom-metrics})
-        transport-breaker (cb-mem/make-circuit-breaker
-                           {:name "election-async-proxy"
-                            :failure-threshold 5
-                            :reset-timeout-ms 5000
-                            :metrics prom-metrics})
+        db-breaker (res-chaos/instrument-breaker
+                    chaos-rt
+                    (cb-mem/make-circuit-breaker
+                     {:name "election-db"
+                      :failure-threshold 5
+                      :reset-timeout-ms 5000
+                      :metrics prom-metrics})
+                    :election-db)
+        transport-breaker (res-chaos/instrument-breaker
+                           chaos-rt
+                           (cb-mem/make-circuit-breaker
+                            {:name "election-async-proxy"
+                             :failure-threshold 5
+                             :reset-timeout-ms 5000
+                             :metrics prom-metrics})
+                           :election-async-proxy)
         health-registry (health-reg/make-health-registry
                          {:service-name "election-api"
                           :metrics prom-metrics
@@ -195,13 +215,16 @@
                                    :liveness {:check-fn (fn [_] {:status :up})
                                               :critical? true
                                               :tags #{:liveness}}}})
-        ingress-transport (ap-transport/create-async-proxy-transport
-                           {:transport :netty
-                            :host proxy-host
-                            :port proxy-grpc-port
-                            :partitions tot-partitions})
-        actor-client (actor-core/create-client ingress-transport {:partitions tot-partitions
-                                                                  :timeout-ms timeout-ms})
+        raw-ingress-transport (ap-transport/create-async-proxy-transport
+                               {:transport :netty
+                                :host proxy-host
+                                :port proxy-grpc-port
+                                :partitions tot-partitions})
+        ingress-transport (res-chaos/instrument-transport chaos-rt raw-ingress-transport "api-ingress")
+        actor-client (res-chaos/instrument-client
+                      chaos-rt
+                      (actor-core/create-client ingress-transport {:partitions tot-partitions
+                                                                   :timeout-ms timeout-ms}))
         handler (routes/make-handler {:actor-client actor-client
                                       :db db
                                       :db-breaker db-breaker
@@ -214,12 +237,25 @@
         jetty-server (jetty/run-jetty handler {:port (int http-port)
                                                :max-threads (int (or max-threads 120))
                                                :min-threads 16
-                                               :join? false})]
+                                               :join? false})
+        admin-server (when (:enabled? chaos-rt)
+                       (println (str "[chaos] enabled " (pr-str (res-chaos/describe chaos-rt))
+                                     " admin-port=" (or (:admin-port chaos-cfg) 8082)))
+                       (res-admin/start-server! {:port (or (:admin-port chaos-cfg) 8082)
+                                                 :token (:admin-token chaos-cfg)
+                                                 :role :api
+                                                 :instance-id (:instance-id chaos-rt)
+                                                 :controller (:controller chaos-rt)
+                                                 :journal (:journal chaos-rt)
+                                                 :health-registry health-registry}))]
     {:role :api
      :db db
+     :raw-db raw-db
      :db-breaker db-breaker
      :transport-breaker transport-breaker
      :health-registry health-registry
+     :chaos-runtime chaos-rt
+     :admin-server admin-server
      :pg-client pg-client
      :tmp-file tmp-file
      :prom-registry prom-registry
@@ -227,15 +263,18 @@
      :tracer-ctx tracer-ctx
      :metrics-atom metrics-atom
      :ingress-transport ingress-transport
+     :raw-ingress-transport raw-ingress-transport
      :actor-client actor-client
      :jetty-server jetty-server}))
 
 (defn stop-api-node!
-  [{:keys [jetty-server ingress-transport pg-client tmp-file tracer-ctx]}]
+  [{:keys [jetty-server ingress-transport raw-ingress-transport pg-client tmp-file tracer-ctx
+           admin-server]}]
+  (res-admin/stop-server! admin-server)
   (when jetty-server
     (.stop ^org.eclipse.jetty.server.Server jetty-server))
-  (when ingress-transport
-    (ap-transport/close-async-proxy-transport! ingress-transport))
+  (when-let [transport (or raw-ingress-transport (res-chaos/unwrap ingress-transport))]
+    (ap-transport/close-async-proxy-transport! transport))
   (when tracer-ctx
     (otel/close-tracer! tracer-ctx))
   (when pg-client
@@ -323,11 +362,16 @@
 (defn start-actors-node
   "Starts a dedicated Election Actors container node hosting sharded actor
    partitions connected to `d-core-async-proxy` over gRPC, writing batches to SQL, and
-   exposing `/metrics` on `metrics-port`."
+   exposing `/metrics` on `metrics-port`.
+
+   When `:chaos` enables the chaos runtime, the write path (SQL, snapshot store,
+   effect handler), the actor transports and the partition leases are instrumented,
+   and an internal admin listener serves `/_chaos/*` plus real health probes.
+   With chaos disabled nothing is wrapped and no extra listener exists."
   [{:keys [metrics-port proxy-host proxy-grpc-port worker-count batch-size flush-every-n
            tick-interval-ms tick-min-batch tick-max-age-ms election-id opens-at closes-at db-opts
            assigned-partitions total-partitions ownership drain-timeout-ms snapshot-every-n
-           tell-interval-ms]
+           tell-interval-ms chaos]
     :or {metrics-port 8081
          proxy-host "localhost"
          proxy-grpc-port 50051
@@ -336,9 +380,16 @@
          tick-interval-ms 2000
          tick-max-age-ms 10000
          election-id "national-2026"}}]
-  (let [assigned (vec (or assigned-partitions (range (or worker-count 4))))
+  (let [chaos-cfg (or chaos {})
+        chaos-rt (res-chaos/make-runtime
+                  (assoc chaos-cfg :instance-id (or (:instance-id chaos-cfg)
+                                                    (:instance-id ownership)
+                                                    (res-chaos/default-instance-id))))
+        assigned (vec (or assigned-partitions (range (or worker-count 4))))
         tot-partitions (long (or total-partitions (max (count assigned) (or worker-count 4))))
         {:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
+        raw-db db
+        db (res-chaos/instrument-db chaos-rt raw-db)
         {:keys [prom-registry prom-metrics]} (init-prometheus true)
         tracer-ctx (otel/init-tracer {:service-name (or (System/getenv "OTEL_SERVICE_NAME") "election-actors")
                                       :instance-id (:instance-id ownership)})
@@ -349,8 +400,14 @@
                         " endpoint=" (or (System/getenv "OTEL_EXPORTER_OTLP_ENDPOINT") "none")
                         " sampling=" (or (System/getenv "OTEL_SAMPLING_RATIO") "1.0")))
         metrics-atom (writer/make-write-metrics)
-        effect-handler (writer/make-effect-handler db metrics-atom nil prom-metrics)
-        snapshot-store (sql-adapter/create-sql-snapshot-store db)
+        ;; The snapshot store keeps its own SQL path, so it is built on the raw
+        ;; database and journaled at the store boundary instead of twice.
+        effect-handler (res-chaos/instrument-effect-handler
+                        chaos-rt
+                        (writer/make-effect-handler db metrics-atom nil prom-metrics))
+        snapshot-store (res-chaos/instrument-snapshot-store
+                        chaos-rt
+                        (sql-adapter/create-sql-snapshot-store raw-db))
         entities (make-entity-specs {:election-id election-id
                                      :opens-at opens-at
                                      :closes-at closes-at
@@ -373,22 +430,23 @@
                 drained-count (atom 0)
                 expected-drains (* 2 (count entities))
                 drained-p (promise)
-                t (ap-transport/create-async-proxy-transport
-                   (cond-> {:transport :netty
-                            :host proxy-host
-                            :port proxy-grpc-port
-                            :partition partition
-                            :partitions tot-partitions
-                            :poll-ms 10}
-                     ;; Credentials only when we actually hold a lease: the proxy
-                     ;; refuses a subscription whose token is not current.
-                     lease-id (assoc :group (or (:group ownership) "actors")
-                                     :lease-id lease-id
-                                     :token token
-                                     :on-drained (fn [_]
-                                         (when (>= (swap! drained-count inc)
-                                                   expected-drains)
-                                           (deliver drained-p true))))))
+                raw-t (ap-transport/create-async-proxy-transport
+                       (cond-> {:transport :netty
+                                :host proxy-host
+                                :port proxy-grpc-port
+                                :partition partition
+                                :partitions tot-partitions
+                                :poll-ms 10}
+                         ;; Credentials only when we actually hold a lease: the proxy
+                         ;; refuses a subscription whose token is not current.
+                         lease-id (assoc :group (or (:group ownership) "actors")
+                                         :lease-id lease-id
+                                         :token token
+                                         :on-drained (fn [_]
+                                             (when (>= (swap! drained-count inc)
+                                                       expected-drains)
+                                               (deliver drained-p true))))))
+                t (res-chaos/instrument-transport chaos-rt raw-t (str "worker/" partition))
                 rt (actor-core/start-runtime
                     {:transport t
                      :storage snapshot-store
@@ -408,16 +466,18 @@
                 read-subs (subscribe-read-lane! t rt entities partition tot-partitions)]
             {:partition partition
              :transport t
+             :raw-transport raw-t
              :runtime rt
              :read-subs read-subs
              :drained-p drained-p}))
 
         stop-partition!
-        (fn [{:keys [runtime read-subs transport]}]
+        (fn [{:keys [runtime read-subs transport raw-transport]}]
           (doseq [sub read-subs]
             (try (actor-p/unsubscribe! transport sub nil) (catch Exception _ nil)))
           (when runtime (actor-core/stop-runtime! runtime))
-          (when transport (ap-transport/close-async-proxy-transport! transport)))
+          (when-let [t (or raw-transport (res-chaos/unwrap transport))]
+            (ap-transport/close-async-proxy-transport! t)))
 
         ;; Drain -> finish the queue -> flush state, in that order. Resigning is
         ;; the manager's job and happens only after this returns.
@@ -465,15 +525,21 @@
                             :group (or (:group ownership) "actors")
                             :instance-id (:instance-id ownership)
                             :heartbeat-ttl-ms (long (or (:heartbeat-ttl-ms ownership) 20000))}))
+        ;; Two handles on purpose: the manager renews through the instrumented
+        ;; lease (so a fault can hit renewals), while health probes use the raw one
+        ;; so they never add lease events to the journal.
+        raw-lease (when (:enabled? ownership)
+                    (ig/init-key :d-core.core.leader-election.valkey/valkey
+                                 {:valkey-client (valkey-client/make-client
+                                                  {:uri (or (:valkey-uri ownership)
+                                                            "redis://localhost:6379")})
+                                  :default-lease-ms (long (or (:lease-ttl-ms ownership) 15000))}))
+        lease (res-chaos/instrument-lease chaos-rt raw-lease)
         manager
         (when (:enabled? ownership)
           (let [ttl (long (or (:lease-ttl-ms ownership) 15000))]
             (own/make-manager
-             {:lease (ig/init-key :d-core.core.leader-election.valkey/valkey
-                                  {:valkey-client (valkey-client/make-client
-                                                   {:uri (or (:valkey-uri ownership)
-                                                             "redis://localhost:6379")})
-                                   :default-lease-ms ttl})
+             {:lease lease
               :group (or (:group ownership) "actors")
               :instance-id (:instance-id ownership)
               :members-fn (fn [] (membership/members member-registry))
@@ -508,10 +574,41 @@
 
         actual-workers-count (if manager (count owned) (count workers))
 
+        ;; Health for this tier is about the write path: can we reach the database,
+        ;; the broker and the lease store, and do we actually hold partitions?
+        owned-fn (when manager
+                   (fn []
+                     {:owned (count (filter (fn [[_ e]] (= :active (:state e)))
+                                            (own/snapshot manager)))
+                      :total tot-partitions}))
+        health-registry (res-health/make-actors-registry
+                         {:service-name "election-actors"
+                          :metrics prom-metrics
+                          :db raw-db
+                          :broker {:host proxy-host :port proxy-grpc-port}
+                          :lease raw-lease
+                          :owned-fn owned-fn})
+
         metrics-handler (make-actors-metrics-handler prom-registry metrics-atom actual-workers-count)
-        jetty-server (jetty/run-jetty metrics-handler {:port (int metrics-port) :join? false})]
+        jetty-server (jetty/run-jetty metrics-handler {:port (int metrics-port) :join? false})
+        admin-server (when (:enabled? chaos-rt)
+                       (println (str "[chaos] enabled " (pr-str (res-chaos/describe chaos-rt))
+                                     " admin-port=" (or (:admin-port chaos-cfg) 8082)))
+                       (res-admin/start-server! {:port (or (:admin-port chaos-cfg) 8082)
+                                                 :token (:admin-token chaos-cfg)
+                                                 :role :actors
+                                                 :instance-id (:instance-id chaos-rt)
+                                                 :controller (:controller chaos-rt)
+                                                 :journal (:journal chaos-rt)
+                                                 :health-registry health-registry}))]
     {:role :actors
      :db db
+     :raw-db raw-db
+     :lease lease
+     :raw-lease raw-lease
+     :chaos-runtime chaos-rt
+     :admin-server admin-server
+     :health-registry health-registry
      :pg-client pg-client
      :tmp-file tmp-file
      :prom-registry prom-registry
@@ -531,14 +628,16 @@
    With leases enabled the manager owns the runtimes: it drains each partition,
    flushes its state, stops it and only then resigns, so a peer cannot start
    consuming a partition this node is still writing to."
-  [{:keys [jetty-server workers ownership-manager pg-client tmp-file tracer-ctx]}]
+  [{:keys [jetty-server workers ownership-manager pg-client tmp-file tracer-ctx admin-server]}]
+  (res-admin/stop-server! admin-server)
   (when jetty-server
     (.stop ^org.eclipse.jetty.server.Server jetty-server))
   (if ownership-manager
     (own/stop! ownership-manager)
-    (doseq [{:keys [runtime transport]} workers]
+    (doseq [{:keys [runtime transport raw-transport]} workers]
       (when runtime (actor-core/stop-runtime! runtime))
-      (when transport (ap-transport/close-async-proxy-transport! transport))))
+      (when-let [t (or raw-transport (res-chaos/unwrap transport))]
+        (ap-transport/close-async-proxy-transport! t))))
   (when tracer-ctx
     (otel/close-tracer! tracer-ctx))
   (when pg-client

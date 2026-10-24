@@ -1,0 +1,48 @@
+# Opt-in overlay that turns on the internal chaos admin plane.
+#
+# WHY THIS IS SEPARATE
+# --------------------
+# Chaos is a fault injector. It must never be reachable in the default stack, and
+# the base compose file must stay free of any switch that could enable it by
+# accident. This overlay is the single place where CHAOS_ENABLED=1 is set; the
+# image itself ships the code inert (see docs/resilience-roadmap.md, item 1).
+#
+# The admin port is deliberately NOT published to the host:
+#   * with `deploy.replicas` a fixed host port cannot be assigned per replica;
+#   * the public entrypoint is `election-api` (nginx), which must never proxy it.
+# Reach it from inside the compose network (the chaos-engine of item 3) or with
+#   docker compose exec <container> sh -c 'curl -s -H "X-Chaos-Token: $CHAOS_ADMIN_TOKEN" http://127.0.0.1:8082/_chaos/status'
+#
+# USAGE
+# -----
+#   export CHAOS_TOKEN=$(openssl rand -hex 16)     # required, fail-closed
+#   make chaos-up
+#   make chaos-status
+#   make chaos-down
+#
+# To go back to the default (no chaos, no admin port):
+#   docker compose -f docker-compose.yaml -f docker-compose.observability.yaml up -d
+#
+# CHAOS_JOURNAL_MODE:
+#   full  record every instrumented operation (default; needed by /_chaos/journal)
+#   off   inject faults, record nothing (lowest overhead, for long load+chaos runs)
+services:
+  election-actors:
+    environment:
+      CHAOS_ENABLED: "1"
+      CHAOS_ADMIN_PORT: "8082"
+      CHAOS_ADMIN_TOKEN: "${CHAOS_TOKEN:?set CHAOS_TOKEN (any random string) before using the chaos overlay}"
+      CHAOS_JOURNAL_MODE: "${CHAOS_JOURNAL_MODE:-full}"
+      CHAOS_MAX_EVENTS: "${CHAOS_MAX_EVENTS:-50000}"
+    expose:
+      - "8082"
+
+  election-api-backend:
+    environment:
+      CHAOS_ENABLED: "1"
+      CHAOS_ADMIN_PORT: "8082"
+      CHAOS_ADMIN_TOKEN: "${CHAOS_TOKEN:?set CHAOS_TOKEN (any random string) before using the chaos overlay}"
+      CHAOS_JOURNAL_MODE: "${CHAOS_JOURNAL_MODE:-full}"
+      CHAOS_MAX_EVENTS: "${CHAOS_MAX_EVENTS:-50000}"
+    expose:
+      - "8082"

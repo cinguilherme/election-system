@@ -118,6 +118,14 @@
      :election-id (env-str "ELECTION_ID" "national-2026")
      :timeout-ms (env-long "TIMEOUT_MS" 10000)
      :max-threads (env-long "JETTY_MAX_THREADS" 120)
+     ;; Chaos is opt-in. docker-compose.chaos.yaml is the only place that sets
+     ;; CHAOS_ENABLED=1; with it off no decorator, journal or admin listener is
+     ;; created, so the request path is the plain one.
+     :chaos {:enabled? (env-bool "CHAOS_ENABLED" false)
+             :admin-port (env-long "CHAOS_ADMIN_PORT" 8082)
+             :admin-token (env-str "CHAOS_ADMIN_TOKEN" nil)
+             :journal-mode (-> (env-str "CHAOS_JOURNAL_MODE" "full") str/lower-case keyword)
+             :max-events (env-long "CHAOS_MAX_EVENTS" 50000)}
      :db-opts {:engine engine
                :jdbc-url jdbc-url
                :username db-user

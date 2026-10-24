@@ -1,4 +1,4 @@
-.PHONY: tests unit integration benchmark lint clean up up-build up-perf down logs load-test load-test-docker stress-test stress-test-docker stress-test-single rate-test rate-test-docker profile profile-cpu profile-perf profile-alloc profile-wall profile-lock profile-mem threaddump throttling purge-streams reset-data build-base ensure-base
+.PHONY: tests unit integration benchmark lint clean up up-build up-perf chaos-up chaos-down chaos-status down logs load-test load-test-docker stress-test stress-test-docker stress-test-single rate-test rate-test-docker profile profile-cpu profile-perf profile-alloc profile-wall profile-lock profile-mem threaddump throttling purge-streams reset-data build-base ensure-base
 
 # Prebuild shared base image containing diagnostic utilities and async-profiler
 build-base:
@@ -46,6 +46,7 @@ lint:
 #   docker-compose.observability.yaml  tracing, metrics, dashboards, container stats
 #   docker-compose.load.yaml           k6 generators (run from another machine)
 #   docker-compose.perf.yaml           extra capabilities for profiling
+#   docker-compose.chaos.yaml          the internal /_chaos admin plane (opt-in)
 #   docker-compose.registry.yaml       the image registry
 up: ensure-base
 	docker compose -f docker-compose.yaml -f docker-compose.observability.yaml up -d
@@ -59,6 +60,24 @@ up-build: ensure-base
 # ctimer/alloc/wall/lock profiling works without this.
 up-perf:
 	docker compose -f docker-compose.yaml -f docker-compose.perf.yaml up -d
+
+# Chaos overlay: the full stack plus the internal /_chaos admin plane on :8082.
+# Fail-closed on CHAOS_TOKEN; the port is never published to the host.
+chaos-up:
+	@test -n "$(CHAOS_TOKEN)" || { echo "CHAOS_TOKEN is required:"; echo "  export CHAOS_TOKEN=\$$(openssl rand -hex 16)"; exit 1; }
+	docker compose -f docker-compose.yaml -f docker-compose.observability.yaml -f docker-compose.chaos.yaml up -d
+
+chaos-down:
+	docker compose -f docker-compose.yaml -f docker-compose.observability.yaml -f docker-compose.chaos.yaml down
+
+# Asks every chaos-enabled replica for its active rules and journal size.
+chaos-status:
+	@for c in $$(docker ps --format '{{.Names}}' | grep -E '^election-system-(election-actors|election-api-backend)-[0-9]+$$'); do \
+		printf '== %s\n   ' "$$c"; \
+		docker exec "$$c" sh -c 'curl -fsS -H "X-Chaos-Token: $$CHAOS_ADMIN_TOKEN" http://127.0.0.1:8082/_chaos/status' \
+			|| echo "(no admin plane -- CHAOS_ENABLED=1?)"; \
+		echo; \
+	done
 
 down:
 	docker compose -f docker-compose.yaml -f docker-compose.observability.yaml down -v
