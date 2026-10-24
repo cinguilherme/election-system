@@ -1,4 +1,4 @@
-.PHONY: tests unit integration benchmark lint clean up up-build up-perf chaos-up chaos-down chaos-status down logs load-test load-test-docker stress-test stress-test-docker stress-test-single rate-test rate-test-docker profile profile-cpu profile-perf profile-alloc profile-wall profile-lock profile-mem threaddump throttling purge-streams reset-data build-base ensure-base
+.PHONY: tests unit integration benchmark lint clean up up-build up-perf chaos-up chaos-down chaos-status chaos-targets chaos-faults chaos-experiments chaos-kill down logs load-test load-test-docker stress-test stress-test-docker stress-test-single rate-test rate-test-docker profile profile-cpu profile-perf profile-alloc profile-wall profile-lock profile-mem threaddump throttling purge-streams reset-data build-base ensure-base
 
 # Prebuild shared base image containing diagnostic utilities and async-profiler
 build-base:
@@ -71,6 +71,7 @@ chaos-down:
 	docker compose -f docker-compose.yaml -f docker-compose.observability.yaml -f docker-compose.chaos.yaml down
 
 # Asks every chaos-enabled replica for its active rules and journal size.
+# Bypasses the engine, so it still works when the engine itself is the problem.
 chaos-status:
 	@for c in $$(docker ps --format '{{.Names}}' | grep -E '^election-system-(election-actors|election-api-backend)-[0-9]+$$'); do \
 		printf '== %s\n   ' "$$c"; \
@@ -78,6 +79,23 @@ chaos-status:
 			|| echo "(no admin plane -- CHAOS_ENABLED=1?)"; \
 		echo; \
 	done
+
+# Operator-facing surface: the chaos-engine on :8088, which addresses replicas for you.
+CHAOS_ENGINE_URL ?= http://127.0.0.1:8088
+CHAOS_CURL = curl -fsS -H "X-Chaos-Token: $(CHAOS_TOKEN)" -H 'content-type: application/json'
+
+chaos-targets:
+	@$(CHAOS_CURL) "$(CHAOS_ENGINE_URL)/api/targets?refresh=true" | python3 -m json.tool
+
+chaos-faults:
+	@$(CHAOS_CURL) "$(CHAOS_ENGINE_URL)/api/faults" | python3 -m json.tool
+
+chaos-experiments:
+	@$(CHAOS_CURL) "$(CHAOS_ENGINE_URL)/api/experiments" | python3 -m json.tool
+
+# Emergency stop: clears and disables injection on every target.
+chaos-kill:
+	@$(CHAOS_CURL) -X POST "$(CHAOS_ENGINE_URL)/api/kill-switch" | python3 -m json.tool
 
 down:
 	docker compose -f docker-compose.yaml -f docker-compose.observability.yaml down -v

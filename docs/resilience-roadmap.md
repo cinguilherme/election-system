@@ -177,27 +177,68 @@ get 401. — **all three verified.**
 
 ### 3. The `chaos-engine` container and control plane  `CHAOS` `TEST` `DX`
 
-- [ ] New module `d-core-chaos-engine` (`:role :chaos-engine`), Ring service, own image
-- [ ] Target discovery, in preference order: node self-registration → compose labels →
+Status: **implemented** — new module `d-core-chaos-engine`, its own image, and a service in the
+chaos overlay.
+
+- [x] New module `d-core-chaos-engine` (`:role :chaos-engine`), Ring service, own image
+- [x] Target discovery, in preference order: node self-registration → compose labels →
       Swarm `tasks.<service>`
-- [ ] `GET /api/targets`, `POST /api/faults`, `GET /api/faults`, `DELETE /api/faults/:id`,
+- [x] `GET /api/targets`, `POST /api/faults`, `GET /api/faults`, `DELETE /api/faults/:id`,
       `POST /api/experiments`, `GET /api/experiments/:id`, `POST /api/experiments/:id/abort`
-- [ ] Selectors: `{service, replica}`, `{instance-id}`, `{component, op, target}`
-- [ ] Fan-out with per-node acknowledgement and partial-failure reporting
-- [ ] `docker-compose.chaos.yaml` gains the `chaos-engine` service
+- [x] Selectors: `{service, replica}`, `{instance-id}`, `{component, op, target}`
+- [x] Fan-out with per-node acknowledgement and partial-failure reporting
+- [x] `docker-compose.chaos.yaml` gains the `chaos-engine` service
+
+**As built**
+
+| Piece | Where |
+| :-- | :-- |
+| Node client (JDK `java.net.http`, injectable for tests) | `d-core-chaos-engine/src/d_core/chaos_engine/client.clj` |
+| Discovery: DNS expansion, static/named addresses, self-registration, replica numbering, selectors | `…/registry.clj` |
+| Fault fan-out, revert, kill switch, experiment timelines and abort | `…/engine.clj` |
+| Operator API + token guard | `…/http.clj` |
+| Assembly and entry point | `…/core.clj`, `…/main.clj` |
+| Image | `d-core-chaos-engine/Dockerfile` |
+| Compose service (`:8088`, token-guarded, internal to the compose network) | `election-system/docker-compose.chaos.yaml` |
+| Make targets | `chaos-targets`, `chaos-faults`, `chaos-experiments`, `chaos-kill` |
+| Tests | `d-core-chaos-engine/test/…` (28 tests / 110 assertions) |
+
+Verified end to end, with two **real** node admin planes (the same handler election-system
+mounts on `:8082`) and the engine driving them over HTTP:
+- a fault on `{service, replica 2}` armed **exactly one** node (replica 1: 0 rules, replica 2: 1);
+- `GET /api/faults` listed it; `DELETE /api/faults/:id` reverted it (both nodes back to 0);
+- an experiment `inject@0 → clear@120ms` reached `:completed` with log `["inject" "clear"]` and
+  left 0 rules behind;
+- with one node stopped, fan-out returned **207** and reported per-replica status;
+- `POST /api/kill-switch` cleared the surviving node;
+- `{"probabilty": 0.1}` → **422** before any node was contacted;
+- `docker compose config` accepts the overlay with the new service.
+
+Deviations / notes:
+- **Discovery order changed in practice**: DNS expansion (`InetAddress/getAllByName` on the compose
+  service name) is the primary mechanism, with self-registration as an opt-in that yields a stable
+  `instance-id`. Docker-label discovery needs a socket proxy and is deferred to item 6 with the
+  pause/kill faults.
+- A separate image (rather than `ROLE=chaos-engine` inside the election-system image) keeps the
+  engine's dependencies and blast radius separate from the application. Same deployment story.
+- `replica` is numbered by `(host, port)`; it is stable only while the address set is. Use
+  `instance-id` when a selector must survive a container restart.
+- Engine state (armed faults, experiments) is in-process. A restart forgets it; nodes keep what
+  was armed until it expires — documented in the module README.
 
 **Done when.** `POST /api/faults` targeting `election-actors` replica 2 fires on exactly that
 container; `DELETE /api/faults/:id` reverts within 1 s; `GET /api/faults` lists what is armed
-everywhere.
+everywhere. — **all three verified against real admin planes.**
 
-**Effort** 3–4 w. **Risk** medium. **Depends on** 1, 2.
+**Effort** 3–4 w (spent: ~1 d). **Risk** medium. **Depends on** 1, 2.
 
 ```bash
-curl -sX POST localhost:8088/api/faults -H 'content-type: application/json' -d '{
-  "target":   {"service": "election-actors", "replica": 2},
-  "selector": {"component": "lease", "op": "renew!"},
-  "fault":    {"type": "return", "return": {"status": "lost"}},
-  "for":      "30s",
+curl -sX POST localhost:8088/api/faults -H "X-Chaos-Token: $CHAOS_TOKEN" \
+  -H 'content-type: application/json' -d '{
+  "selector": {"service": "election-actors", "replica": 2},
+  "rule":     {"component": "lease", "op": "renew!",
+               "for": "30s",
+               "fault": {"type": "return", "return": {"status": "lost"}}},
   "note":     "lease-renewal blackhole"
 }'
 ```

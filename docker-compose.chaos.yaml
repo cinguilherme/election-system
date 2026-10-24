@@ -30,7 +30,38 @@
 # CHAOS_ALLOWED_COMPONENTS narrows what a rule may target; a component outside the
 # list is rejected with 422 instead of armed. CHAOS_MAX_TOTAL_HITS is the blast
 # radius: when the node has injected that many faults it disables itself.
+#
+# The chaos-engine (below) is the only component that talks to the admin ports:
+# it resolves a service to its replicas over the compose network, so the nodes never
+# publish 8082 and the operator never addresses a container by name.
 services:
+  chaos-engine:
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-chaos-engine:${TAG:-latest}
+    build:
+      context: ..
+      dockerfile: d-core-chaos-engine/Dockerfile
+      provenance: false
+    ports:
+      # Operator-facing API. Token-guarded; this is the surface you curl.
+      - "8088:8088"
+    environment:
+      # Service DNS expands to every replica IP, so `replica: 2` means the second
+      # container of the service, not "whichever one answered".
+      CHAOS_TARGETS: "election-actors:8082,election-api-backend:8082"
+      CHAOS_ENGINE_PORT: "8088"
+      CHAOS_TOKEN: "${CHAOS_TOKEN:?set CHAOS_TOKEN (any random string) before using the chaos overlay}"
+      CHAOS_REFRESH_MS: "${CHAOS_REFRESH_MS:-10000}"
+      CHAOS_TIMEOUT_MS: "${CHAOS_TIMEOUT_MS:-2000}"
+      CHAOS_ALLOWED_COMPONENTS: "${CHAOS_ALLOWED_COMPONENTS:-db,actor-transport,actor-client,actor-delivery,actor-effect,snapshot,lease,circuit-breaker}"
+    depends_on:
+      - election-actors
+      - election-api-backend
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
   election-actors:
     environment:
       CHAOS_ENABLED: "1"

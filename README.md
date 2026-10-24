@@ -40,22 +40,38 @@ image but stays inert. It is enabled only by the `docker-compose.chaos.yaml` ove
 
 ```bash
 export CHAOS_TOKEN=$(openssl rand -hex 16)
-make chaos-up          # stack + observability + internal admin plane
-make chaos-status      # /_chaos/status from every replica
+make chaos-up          # stack + observability + admin planes + chaos-engine
+make chaos-targets     # what the engine can reach, per replica
+make chaos-faults      # what is armed right now
+make chaos-kill        # clear and disable everywhere
 make chaos-down
 ```
 
 Every API and actors replica then exposes an **internal** admin plane on `:8082`
-(`/_chaos/status`, `/_chaos/rules`, `/_chaos/journal`, plus `/live`, `/ready`, `/health` with
-real dependency probes). The port is not published to the host and is not routed by the API
-load balancer.
+(`/_chaos/status`, `/_chaos/rules`, `/_chaos/audit`, plus `/live`, `/ready`, `/health` with real
+dependency probes). The port is not published to the host and is not routed by the API load
+balancer; the `chaos-engine` on `:8088` is the only thing that talks to it.
 
 ```bash
-# The next lease renewal on this replica answers "lost".
+# Lose lease renewals on exactly replica 2 of the actors tier, for 30 s.
+curl -s -X POST localhost:8088/api/faults -H "X-Chaos-Token: $CHAOS_TOKEN" \
+  -H 'content-type: application/json' -d '{
+    "selector": {"service": "election-actors", "replica": 2},
+    "rule": {"id": "lease-blackhole", "component": "lease", "op": "renew!",
+             "for": "30s", "max-hits": 3,
+             "fault": {"type": "return", "return": {"status": "lost"}}}
+  }'
+
+# Revert it everywhere.
+curl -s -X DELETE localhost:8088/api/faults/lease-blackhole -H "X-Chaos-Token: $CHAOS_TOKEN"
+```
+
+`make chaos-status` still bypasses the engine and asks every container directly — useful when the
+engine is the thing that is broken:
+
+```bash
 docker compose exec election-system-election-actors-1 sh -c \
-  'curl -s -H "X-Chaos-Token: $CHAOS_ADMIN_TOKEN" -X POST http://127.0.0.1:8082/_chaos/rules \
-       -H "content-type: application/json" \
-       -d "{\"id\":\"lease-blackhole\",\"component\":\"lease\",\"op\":\"renew!\",\"times\":1,\"fault\":{\"type\":\"return\",\"return\":{\"status\":\"lost\"}}}"'
+  'curl -s -H "X-Chaos-Token: $CHAOS_ADMIN_TOKEN" http://127.0.0.1:8082/_chaos/status'
 ```
 
 With `CHAOS_ENABLED` unset (the default stack) no decorator, journal or admin port exists.
