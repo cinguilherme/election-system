@@ -433,27 +433,59 @@ two live observations are pending a run on the lab stack.
 
 ### 7. `d-core-resilience` — one declarative facade  `ERG` `SCALE`
 
-- [ ] One policy engine: `timeout → bulkhead → circuit-breaker → retry → fallback`, documented
+Status: **module implemented and adopted on the API path**. The two hand-built breakers in
+`start-api-node` are now policy maps; the rest of the wiring (write path, HTTP client, producers)
+is not migrated yet.
+
+- [x] One policy engine: `timeout → bulkhead → circuit-breaker → retry → fallback`, documented
       order, one config shape
 - [ ] Reuse it from `d-core-http`, `d-core-db`, producers and actor transports
 - [ ] Delete the inline breaker/rate-limit pipeline in `d-core-http`; retire the ad-hoc
       rate limiter in `d-core-rate-limit`
 - [ ] Reference service: `system.edn` → running service with health, breakers, metrics, chaos
 
-```clojure
-(resilience/guard :election-db
-  {:timeout-ms 5000
-   :bulkhead {:max-concurrent 16}
-   :breaker  {:failure-rate 0.5 :window 30 :min-calls 10 :open-for "10s"}
-   :retry    {:max 2 :backoff :exponential :jitter 0.2
-              :on #{:timeout :io} :idempotent-only true}
-   :fallback (fn [_ex] {:status :degraded})})
-```
+**As built**
+
+| Piece | Where |
+| :-- | :-- |
+| Closed policy schema, normalization, `:open-for` parsing, `:fallback-sym` | `d-core-resilience/src/d_core/resilience/policy.clj` |
+| The chain, metrics, health, `CircuitBreakerProtocol`/`HealthCheckProtocol` drop-in, Integrant key | `…/core.clj` |
+| API path: db and transport breakers are guards built from a policy map | `election-system/src/election_system/system.clj` (`start-api-node`, test cluster) |
+| Tests | `d-core-resilience/test/…/core_test.clj` (13 tests), election wiring test |
+
+Verified:
+- Policy: unknown key rejected with its path; `:failure-rate` refused with an explicit
+  "arrives with item 8" message; a retry with no `:on`/`:idempotent-only` refused; `"10s"` →
+  `10000`.
+- Chain: a timeout bounds one attempt; retry stops on success and counts attempts; a
+  non-matching error is not retried; `:idempotent-only` needs the caller's promise; the breaker
+  opens, rejects **without invoking the operation**, and half-opens again after its cooldown; a
+  rejected call is never retried; the bulkhead caps concurrency and returns its permit; an open
+  breaker does not consume a bulkhead permit; the fallback covers both failures and rejections;
+  health follows the breaker; an invalid policy throws at construction with the errors.
+- Drop-in: `protect!`, `state`, `trip!`, `reset!`, `check-health` all work through the protocol
+  the app already used (asserted from the election-system test suite).
+- Suites: `d-core-resilience` 13 / 45, `election-system` 40 / 213.
+
+Deviations / notes:
+- **`d-core-http` was not refactored.** Its inline `rate-limit/bulkhead/breaker/retry` pipeline is
+  on the async-proxy's hot path; replacing it is a separate, riskier change than adding the
+  facade, and doing both at once would leave no stable baseline. It is now item 7b.
+- **The write path still uses the chaos decorators directly.** The guards were adopted where a
+  breaker already existed (API db + transport). Migrating `d-core-db`, producers and actor
+  transports means giving those modules a guard dependency and deleting their ad-hoc retry
+  config; that is the 4–6 week half of this item.
+- **No reference-service scaffold yet** (`system.edn` → running service). The module's README
+  documents the shape; the generator belongs with item 12's module template.
+- `:failure-rate` is explicitly refused rather than approximated — see item 8.
 
 **Done when.** election-system's wiring is a policy map; one policy type covers
-HTTP/DB/actor/lease; a scaffolded service has `/health` in under a minute.
+HTTP/DB/actor/lease; a scaffolded service has `/health` in under a minute. — the API's breakers
+are policy maps and one type covers breaker+timeout+bulkhead+retry+fallback; the other two
+conditions are open.
 
-**Effort** 4–6 w. **Risk** high — refactor of live call paths; keep the protocols.
+**Effort** 4–6 w (spent: ~1 d for the module + API adoption). **Risk** high. **Depends on** 8
+for rate-based tripping.
 
 ### 8. Circuit breaker v2  `SCALE`
 

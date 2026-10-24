@@ -5,6 +5,9 @@
   (:require [cheshire.core :as json]
             [clojure.test :refer [deftest is testing]]
             [d-core.chaos.journal :as chaos-journal]
+            [d-core.core.circuit-breaker.protocol :as cb]
+            [d-core.core.health.protocol :as health-p]
+            [d-core.resilience.core :as resilience]
             [election-system.api.routes :as routes]
             [d-core.actor-system.protocols :as actor-p]
             [d-core.core.databases.protocols.simple-sql :as sql]
@@ -247,3 +250,25 @@
   (let [f (chaos/trace-id-fn)]
     (is (fn? f))
     (is (nil? (f)))))
+
+;; ============================================================================
+;; Resilience guards (roadmap item 7)
+;; ============================================================================
+
+(deftest a-guard-is-a-drop-in-for-the-breaker-the-app-already-uses
+  (let [g (resilience/make-guard {:name "election-db"
+                                  :timeout-ms 1000
+                                  :breaker {:failure-threshold 2}})]
+    (testing "it satisfies the protocols routes and the health registry expect"
+      (is (satisfies? cb/CircuitBreakerProtocol g))
+      (is (satisfies? health-p/HealthCheckProtocol g)))
+    (testing "protect! runs the operation and records failures"
+      (is (= :ok (cb/protect! g (fn [] :ok))))
+      (dotimes [_ 2]
+        (try (cb/protect! g (fn [] (throw (ex-info "x" {:type :test}))))
+             (catch Exception _ nil)))
+      (is (= :open (cb/state g)))
+      (is (= :down (:status (health-p/check-health g))))
+      (testing "and trip/reset still work"
+        (cb/reset! g)
+        (is (= :closed (cb/state g)))))))

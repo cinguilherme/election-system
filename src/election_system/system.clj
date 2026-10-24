@@ -13,7 +13,6 @@
             [d-core.chaos.http :as chaos-http]
             [d-core.chaos.instrument :as chaos-inst]
             [d-core.chaos.journal :as chaos-journal]
-            [d-core.circuit-breaker.in-memory :as cb-mem]
             [d-core.core.clients.postgres.client :as pg-client]
             [d-core.core.clients.sqlite.client :as sqlite-client]
             [d-core.core.clients.valkey.client :as valkey-client]
@@ -27,6 +26,7 @@
             [d-core.core.producers.common :as common-prod]
             [d-core.core.producers.in-memory :as im-prod]
             [d-core.health.registry :as health-reg]
+            [d-core.resilience.core :as resilience]
             [d-core.libs.time :as time]
             [d-core.queue]
             [d-core-async-proxy.grpc.server :as grpc-srv]
@@ -187,20 +187,23 @@
                         " endpoint=" (or (System/getenv "OTEL_EXPORTER_OTLP_ENDPOINT") "none")
                         " sampling=" (or (System/getenv "OTEL_SAMPLING_RATIO") "1.0")))
         metrics-atom (writer/make-write-metrics)
+        ;; A guard is a breaker + timeout (+ bulkhead/retry/fallback when the policy
+        ;; asks for them); the routes and the health registry keep using it through
+        ;; CircuitBreakerProtocol, so the policy is the only thing that changes.
         db-breaker (res-chaos/instrument-breaker
                     chaos-rt
-                    (cb-mem/make-circuit-breaker
+                    (resilience/make-guard
                      {:name "election-db"
-                      :failure-threshold 5
-                      :reset-timeout-ms 5000
+                      :timeout-ms (or timeout-ms 10000)
+                      :breaker {:failure-threshold 5 :reset-timeout-ms 5000}
                       :metrics prom-metrics})
                     :election-db)
         transport-breaker (res-chaos/instrument-breaker
                            chaos-rt
-                           (cb-mem/make-circuit-breaker
+                           (resilience/make-guard
                             {:name "election-async-proxy"
-                             :failure-threshold 5
-                             :reset-timeout-ms 5000
+                             :timeout-ms (or timeout-ms 10000)
+                             :breaker {:failure-threshold 5 :reset-timeout-ms 5000}
                              :metrics prom-metrics})
                            :election-async-proxy)
         health-registry (health-reg/make-health-registry
@@ -737,17 +740,19 @@
                                                                       :timeout-ms 5000})
         actor-client (chaos-inst/instrument-actor-client raw-actor-client controller journal
                                                          {:instance-id "api-ingress"})
-        raw-db-breaker (cb-mem/make-circuit-breaker
+        raw-db-breaker (resilience/make-guard
                         {:name "election-db"
-                         :failure-threshold (or cb-failure-threshold 5)
-                         :reset-timeout-ms (or cb-reset-timeout-ms 5000)
+                         :timeout-ms 5000
+                         :breaker {:failure-threshold (or cb-failure-threshold 5)
+                                   :reset-timeout-ms (or cb-reset-timeout-ms 5000)}
                          :metrics prom-metrics})
         db-breaker (chaos-inst/instrument-circuit-breaker raw-db-breaker :election-db controller journal
                                                           {:instance-id "api-ingress"})
-        raw-transport-breaker (cb-mem/make-circuit-breaker
+        raw-transport-breaker (resilience/make-guard
                                {:name "election-async-proxy"
-                                :failure-threshold (or cb-failure-threshold 5)
-                                :reset-timeout-ms (or cb-reset-timeout-ms 5000)
+                                :timeout-ms 5000
+                                :breaker {:failure-threshold (or cb-failure-threshold 5)
+                                          :reset-timeout-ms (or cb-reset-timeout-ms 5000)}
                                 :metrics prom-metrics})
         transport-breaker (chaos-inst/instrument-circuit-breaker raw-transport-breaker :election-async-proxy controller journal
                                                                  {:instance-id "api-ingress"})

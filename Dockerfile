@@ -18,6 +18,7 @@ COPY d-core-leader-election/deps.edn /workspace/d-core-leader-election/deps.edn
 COPY d-core-chaos/deps.edn /workspace/d-core-chaos/deps.edn
 COPY d-core-health/deps.edn /workspace/d-core-health/deps.edn
 COPY d-core-circuit-breaker/deps.edn /workspace/d-core-circuit-breaker/deps.edn
+COPY d-core-resilience/deps.edn /workspace/d-core-resilience/deps.edn
 COPY election-system/deps.edn /workspace/election-system/deps.edn
 
 WORKDIR /workspace/election-system
@@ -39,6 +40,7 @@ COPY d-core-leader-election /workspace/d-core-leader-election
 COPY d-core-chaos /workspace/d-core-chaos
 COPY d-core-health /workspace/d-core-health
 COPY d-core-circuit-breaker /workspace/d-core-circuit-breaker
+COPY d-core-resilience /workspace/d-core-resilience
 COPY election-system /workspace/election-system
 
 ENV ROLE=api
