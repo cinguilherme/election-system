@@ -5,14 +5,22 @@
   (:require [cheshire.core :as json]
             [clojure.string :as str]
             [d-core.actor-system.core :as actor]
+            [d-core.core.circuit-breaker.protocol :as cb]
             [d-core.core.metrics.prometheus :as prom]
             [d-core.core.metrics.protocol :as metrics-proto]
             [d-core.core.metrics.tracing :as otel]
             [d-core.core.metrics.wrappers :as wrappers]
+            [d-core.health.http :as health-http]
             [d-core.libs.time :as time]
             [election-system.db.writer :as writer]
             [election-system.domain.election :as domain]
             [reitit.ring :as ring]))
+
+(defn- protect-with-breaker
+  [breaker f]
+  (if breaker
+    (cb/protect! breaker f)
+    (f)))
 
 (defn- json-response
   [body status]
@@ -41,25 +49,31 @@
                    200)))
 
 (defn- handle-configure-window
-  [{:keys [actor-client timeout-ms]}]
+  [{:keys [actor-client transport-breaker timeout-ms]}]
   (fn [req]
-    (let [election-id (get-in req [:path-params :election-id])
-          precinct-id (get-in req [:path-params :precinct-id])
-          actor-id (domain/precinct-actor-id election-id precinct-id)
-          body (parse-body req)
-          res (actor/ask-sync! actor-client
-                               :precinct
-                               actor-id
-                               (cond-> {:type :configure-window
-                                        :election-id election-id}
-                                 (contains? body :opens_at) (assoc :opens-at (:opens_at body))
-                                 (contains? body :opens-at) (assoc :opens-at (:opens-at body))
-                                 (contains? body :closes_at) (assoc :closes-at (:closes-at body))
-                                 (contains? body :closes-at) (assoc :closes-at (:closes-at body))
-                                 (:batch_size body) (assoc :batch-size (:batch_size body))
-                                 (:batch-size body) (assoc :batch-size (:batch-size body)))
-                               {:timeout-ms (or timeout-ms 5000)})]
-      (json-response res 200))))
+    (try
+      (let [election-id (get-in req [:path-params :election-id])
+            precinct-id (get-in req [:path-params :precinct-id])
+            actor-id (domain/precinct-actor-id election-id precinct-id)
+            body (parse-body req)
+            res (protect-with-breaker transport-breaker
+                                      #(actor/ask-sync! actor-client
+                                                        :precinct
+                                                        actor-id
+                                                        (cond-> {:type :configure-window
+                                                                 :election-id election-id}
+                                                          (contains? body :opens_at) (assoc :opens-at (:opens_at body))
+                                                          (contains? body :opens-at) (assoc :opens-at (:opens-at body))
+                                                          (contains? body :closes_at) (assoc :closes-at (:closes-at body))
+                                                          (contains? body :closes-at) (assoc :closes-at (:closes-at body))
+                                                          (:batch_size body) (assoc :batch-size (:batch_size body))
+                                                          (:batch-size body) (assoc :batch-size (:batch-size body)))
+                                                        {:timeout-ms (or timeout-ms 5000)}))]
+        (json-response res 200))
+      (catch clojure.lang.ExceptionInfo e
+        (if (= :circuit-breaker/open (:type (ex-data e)))
+          (json-response {:status "error" :reason "circuit-breaker-open" :message (.getMessage e)} 503)
+          (throw e))))))
 
 (defn- status-code-for-vote-reply
   [reply]
@@ -78,7 +92,7 @@
                            [election-id (or candidate-id "unknown") mode status])))
 
 (defn- handle-cast-vote
-  [{:keys [actor-client metrics votes-counter timeout-ms]}]
+  [{:keys [actor-client transport-breaker metrics votes-counter timeout-ms]}]
   (fn [req]
     (let [election-id (get-in req [:path-params :election-id])
           body (parse-body req)
@@ -95,30 +109,40 @@
               async? (or (true? (:async body))
                          (= "true" (get-in req [:query-params "async"])))
               msg (assoc vote :type :cast-vote)]
-          (if async?
-            (do
-              ;; Acknowledged publish, always. "Async" here means the *caller*
-              ;; does not wait for the actor's answer -- it does NOT mean the API
-              ;; may return 202 before the broker has secured the message. A 202
-              ;; without a publish ack would be a promise we cannot keep, and the
-              ;; measured cost of acking turned out to be none (p50 was identical
-              ;; with the ack disabled), so there is nothing to trade away.
-              (actor/tell! actor-client :precinct actor-id msg {})
-              (record-vote-metric! metrics votes-counter election-id candidate-id :async :accepted)
-              (json-response {:status "accepted"
-                              :mode "async"
-                              :ballot-id (:ballot-id vote)
-                              :election-id election-id
-                              :precinct-id precinct-id}
-                             202))
-            (let [reply (actor/ask-sync! actor-client
-                                         :precinct
-                                         actor-id
-                                         msg
-                                         {:timeout-ms (or timeout-ms 5000)})
-                  vote-status (or (:status reply) :error)]
-              (record-vote-metric! metrics votes-counter election-id candidate-id :sync vote-status)
-              (json-response reply (status-code-for-vote-reply reply)))))))))
+          (try
+            (if async?
+              (do
+                ;; Acknowledged publish, always. "Async" here means the *caller*
+                ;; does not wait for the actor's answer -- it does NOT mean the API
+                ;; may return 202 before the broker has secured the message. A 202
+                ;; without a publish ack would be a promise we cannot keep, and the
+                ;; measured cost of acking turned out to be none (p50 was identical
+                ;; with the ack disabled), so there is nothing to trade away.
+                (protect-with-breaker transport-breaker
+                                      #(actor/tell! actor-client :precinct actor-id msg {}))
+                (record-vote-metric! metrics votes-counter election-id candidate-id :async :accepted)
+                (json-response {:status "accepted"
+                                :mode "async"
+                                :ballot-id (:ballot-id vote)
+                                :election-id election-id
+                                :precinct-id precinct-id}
+                               202))
+              (let [reply (protect-with-breaker transport-breaker
+                                                #(actor/ask-sync! actor-client
+                                                                  :precinct
+                                                                  actor-id
+                                                                  msg
+                                                                  {:timeout-ms (or timeout-ms 5000)}))
+                    vote-status (or (:status reply) :error)]
+                (record-vote-metric! metrics votes-counter election-id candidate-id :sync vote-status)
+                (json-response reply (status-code-for-vote-reply reply))))
+            (catch clojure.lang.ExceptionInfo e
+              (if (= :circuit-breaker/open (:type (ex-data e)))
+                (json-response {:status "error"
+                                :reason "circuit-breaker-open"
+                                :message (.getMessage e)}
+                               503)
+                (throw e)))))))))
 
 (defn- handle-flush-precinct
   [{:keys [actor-client timeout-ms]}]
@@ -222,24 +246,32 @@
                        200)))))
 
 (defn- handle-election-audit
-  [{:keys [actor-client db metrics-atom timeout-ms]}]
+  [{:keys [actor-client db transport-breaker db-breaker metrics-atom timeout-ms]}]
   (fn [req]
-    (let [election-id (get-in req [:path-params :election-id])
-          live-tally (actor/ask-sync! actor-client
-                                      :election-tally
-                                      election-id
-                                      {:type :get-tally}
-                                      {:timeout-ms (or timeout-ms 5000)})
-          db-audit (when db (writer/query-db-audit db election-id))
-          write-metrics (when metrics-atom @metrics-atom)]
-      (json-response {:election-id election-id
-                      :live-actor-tally live-tally
-                      :db-audit db-audit
-                      :write-metrics write-metrics
-                      :consistent? (if db-audit
-                                     (= (:total-votes live-tally) (:ballot-count db-audit))
-                                     true)}
-                     200))))
+    (try
+      (let [election-id (get-in req [:path-params :election-id])
+            live-tally (protect-with-breaker transport-breaker
+                                             #(actor/ask-sync! actor-client
+                                                               :election-tally
+                                                               election-id
+                                                               {:type :get-tally}
+                                                               {:timeout-ms (or timeout-ms 5000)}))
+            db-audit (when db
+                       (protect-with-breaker db-breaker
+                                             #(writer/query-db-audit db election-id)))
+            write-metrics (when metrics-atom @metrics-atom)]
+        (json-response {:election-id election-id
+                        :live-actor-tally live-tally
+                        :db-audit db-audit
+                        :write-metrics write-metrics
+                        :consistent? (if db-audit
+                                       (= (:total-votes live-tally) (:ballot-count db-audit))
+                                       true)}
+                       200))
+      (catch clojure.lang.ExceptionInfo e
+        (if (= :circuit-breaker/open (:type (ex-data e)))
+          (json-response {:status "error" :reason "circuit-breaker-open" :message (.getMessage e)} 503)
+          (throw e))))))
 
 (defn- handle-metrics
   [{:keys [metrics]}]
@@ -263,7 +295,7 @@
 
 (defn make-handler
   "Creates the Ring handler for the Election System API Ingress service."
-  [{:keys [metrics prom-metrics] :as ctx}]
+  [{:keys [metrics prom-metrics health-registry] :as ctx}]
   (let [eff-metrics (or metrics prom-metrics)
         votes-counter (when eff-metrics
                         (metrics-proto/counter
@@ -274,17 +306,25 @@
         enriched-ctx (assoc ctx
                             :metrics eff-metrics
                             :votes-counter votes-counter)
+        health-opts {:status-mapper (fn [st] (case st :up "ok" :degraded "degraded" :down "down" :unknown "unknown" (name st)))}
+        health-routes-data (if health-registry
+                             [["/live" {:get {:handler (health-http/make-live-handler health-registry health-opts)}}]
+                              ["/ready" {:get {:handler (health-http/make-ready-handler health-registry health-opts)}}]
+                              ["/health" {:get {:handler (health-http/make-health-handler health-registry health-opts)}}]]
+                             [["/health" {:get {:handler (handle-health enriched-ctx)}}]
+                              ["/live" {:get {:handler (handle-health enriched-ctx)}}]
+                              ["/ready" {:get {:handler (handle-health enriched-ctx)}}]])
         base-handler (ring/ring-handler
                       (ring/router
-                       [["/health" {:get {:handler (handle-health enriched-ctx)}}]
-                        ["/metrics" {:get {:handler (handle-metrics enriched-ctx)}}]
-                        ["/v1/elections/:election-id"
-                         ["/votes" {:post {:handler (handle-cast-vote enriched-ctx)}}]
-                         ["/tally" {:get {:handler (handle-election-tally enriched-ctx)}}]
-                         ["/audit" {:get {:handler (handle-election-audit enriched-ctx)}}]
-                         ["/precincts/:precinct-id/window" {:post {:handler (handle-configure-window enriched-ctx)}}]
-                         ["/precincts/:precinct-id/flush" {:post {:handler (handle-flush-precinct enriched-ctx)}}]
-                         ["/precincts/:precinct-id/tally" {:get {:handler (handle-precinct-tally enriched-ctx)}}]]])
+                       (into health-routes-data
+                             [["/metrics" {:get {:handler (handle-metrics enriched-ctx)}}]
+                              ["/v1/elections/:election-id"
+                               ["/votes" {:post {:handler (handle-cast-vote enriched-ctx)}}]
+                               ["/tally" {:get {:handler (handle-election-tally enriched-ctx)}}]
+                               ["/audit" {:get {:handler (handle-election-audit enriched-ctx)}}]
+                               ["/precincts/:precinct-id/window" {:post {:handler (handle-configure-window enriched-ctx)}}]
+                               ["/precincts/:precinct-id/flush" {:post {:handler (handle-flush-precinct enriched-ctx)}}]
+                               ["/precincts/:precinct-id/tally" {:get {:handler (handle-precinct-tally enriched-ctx)}}]]]))
                       (ring/create-default-handler))
         traced-handler (otel/wrap-http-tracing base-handler {:service "election-api"
                                                              :normalize-uri-fn normalize-election-uri})]

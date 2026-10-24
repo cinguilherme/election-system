@@ -9,6 +9,7 @@
             [d-core.actor-system.storage.sql-adapter :as sql-adapter]
             [d-core.actor-system.system]
             [d-core.actor-system.transport.async-proxy :as ap-transport]
+            [d-core.circuit-breaker.in-memory :as cb-mem]
             [d-core.core.clients.postgres.client :as pg-client]
             [d-core.core.clients.sqlite.client :as sqlite-client]
             [d-core.core.clients.valkey.client :as valkey-client]
@@ -21,6 +22,7 @@
             [d-core.core.metrics.tracing :as otel]
             [d-core.core.producers.common :as common-prod]
             [d-core.core.producers.in-memory :as im-prod]
+            [d-core.health.registry :as health-reg]
             [d-core.libs.time :as time]
             [d-core.queue]
             [d-core-async-proxy.grpc.server :as grpc-srv]
@@ -167,6 +169,28 @@
                         " endpoint=" (or (System/getenv "OTEL_EXPORTER_OTLP_ENDPOINT") "none")
                         " sampling=" (or (System/getenv "OTEL_SAMPLING_RATIO") "1.0")))
         metrics-atom (writer/make-write-metrics)
+        db-breaker (cb-mem/make-circuit-breaker
+                    {:name "election-db"
+                     :failure-threshold 5
+                     :reset-timeout-ms 5000
+                     :metrics prom-metrics})
+        transport-breaker (cb-mem/make-circuit-breaker
+                           {:name "election-async-proxy"
+                            :failure-threshold 5
+                            :reset-timeout-ms 5000
+                            :metrics prom-metrics})
+        health-registry (health-reg/make-health-registry
+                         {:service-name "election-api"
+                          :metrics prom-metrics
+                          :checks {:db {:component db-breaker
+                                        :critical? true
+                                        :tags #{:readiness}}
+                                   :async-proxy {:component transport-breaker
+                                                 :critical? true
+                                                 :tags #{:readiness}}
+                                   :liveness {:check-fn (fn [_] {:status :up})
+                                              :critical? true
+                                              :tags #{:liveness}}}})
         ingress-transport (ap-transport/create-async-proxy-transport
                            {:transport :netty
                             :host proxy-host
@@ -176,6 +200,9 @@
                                                                   :timeout-ms timeout-ms})
         handler (routes/make-handler {:actor-client actor-client
                                       :db db
+                                      :db-breaker db-breaker
+                                      :transport-breaker transport-breaker
+                                      :health-registry health-registry
                                       :metrics-atom metrics-atom
                                       :prom-metrics prom-metrics
                                       :prom-registry prom-registry
@@ -186,6 +213,9 @@
                                                :join? false})]
     {:role :api
      :db db
+     :db-breaker db-breaker
+     :transport-breaker transport-breaker
+     :health-registry health-registry
      :pg-client pg-client
      :tmp-file tmp-file
      :prom-registry prom-registry
@@ -586,13 +616,41 @@
                             :partitions tot-partitions})
         actor-client (actor-core/create-client ingress-transport {:partitions tot-partitions
                                                                   :timeout-ms 5000})
+        db-breaker (cb-mem/make-circuit-breaker
+                    {:name "election-db"
+                     :failure-threshold 5
+                     :reset-timeout-ms 5000
+                     :metrics prom-metrics})
+        transport-breaker (cb-mem/make-circuit-breaker
+                           {:name "election-async-proxy"
+                            :failure-threshold 5
+                            :reset-timeout-ms 5000
+                            :metrics prom-metrics})
+        health-registry (health-reg/make-health-registry
+                         {:service-name "election-api"
+                          :metrics prom-metrics
+                          :checks {:db {:component db-breaker
+                                        :critical? true
+                                        :tags #{:readiness}}
+                                   :async-proxy {:component transport-breaker
+                                                 :critical? true
+                                                 :tags #{:readiness}}
+                                   :liveness {:check-fn (fn [_] {:status :up})
+                                              :critical? true
+                                              :tags #{:liveness}}}})
         api-handler (routes/make-handler {:actor-client actor-client
                                           :db actual-db
+                                          :db-breaker db-breaker
+                                          :transport-breaker transport-breaker
+                                          :health-registry health-registry
                                           :metrics-atom metrics-atom
                                           :prom-metrics prom-metrics
                                           :prom-registry prom-registry
                                           :timeout-ms 5000})]
      {:db actual-db
+      :db-breaker db-breaker
+      :transport-breaker transport-breaker
+      :health-registry health-registry
       :tmp-file tmp-file
       :in-process-name in-proc-name
       :metrics-atom metrics-atom
