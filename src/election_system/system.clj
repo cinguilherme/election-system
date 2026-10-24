@@ -13,6 +13,7 @@
             [d-core.chaos.http :as chaos-http]
             [d-core.chaos.instrument :as chaos-inst]
             [d-core.chaos.journal :as chaos-journal]
+            [d-core.circuit-breaker.signal :as cb-signal]
             [d-core.core.clients.postgres.client :as pg-client]
             [d-core.core.clients.sqlite.client :as sqlite-client]
             [d-core.core.clients.valkey.client :as valkey-client]
@@ -187,6 +188,15 @@
                         " endpoint=" (or (System/getenv "OTEL_EXPORTER_OTLP_ENDPOINT") "none")
                         " sampling=" (or (System/getenv "OTEL_SAMPLING_RATIO") "1.0")))
         metrics-atom (writer/make-write-metrics)
+        ;; Optional shared open signal: when VALKEY_URI is set, a replica that trips
+        ;; publishes it and the other API replicas fail fast on their next call
+        ;; instead of each discovering the outage on its own. It expires by TTL, so a
+        ;; replica that dies after tripping cannot pin the dependency open.
+        shared-signal (fn [breaker-name]
+                        (when-let [uri (System/getenv "VALKEY_URI")]
+                          (cb-signal/make-valkey-signal
+                           {:client (valkey-client/make-client {:uri uri})
+                            :name breaker-name})))
         ;; A guard is a breaker + timeout (+ bulkhead/retry/fallback when the policy
         ;; asks for them); the routes and the health registry keep using it through
         ;; CircuitBreakerProtocol, so the policy is the only thing that changes.
@@ -195,7 +205,9 @@
                     (resilience/make-guard
                      {:name "election-db"
                       :timeout-ms (or timeout-ms 10000)
-                      :breaker {:failure-threshold 5 :reset-timeout-ms 5000}
+                      :breaker {:failure-threshold 5 :reset-timeout-ms 5000
+                                :reset-jitter-ratio 0.2}
+                      :signal (shared-signal "election-db")
                       :metrics prom-metrics})
                     :election-db)
         transport-breaker (res-chaos/instrument-breaker
@@ -203,7 +215,9 @@
                            (resilience/make-guard
                             {:name "election-async-proxy"
                              :timeout-ms (or timeout-ms 10000)
-                             :breaker {:failure-threshold 5 :reset-timeout-ms 5000}
+                             :breaker {:failure-threshold 5 :reset-timeout-ms 5000
+                                       :reset-jitter-ratio 0.2}
+                             :signal (shared-signal "election-async-proxy")
                              :metrics prom-metrics})
                            :election-async-proxy)
         health-registry (health-reg/make-health-registry

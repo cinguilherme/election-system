@@ -87,6 +87,19 @@ curl -s "localhost:8088/api/experiments/$EXP_ID/journal" -H "X-Chaos-Token: $CHA
 The reply is one timeline ordered by `(timestamp, node, seq)` with per-replica spans, clock
 skew and unreachable replicas named.
 
+### Circuit breakers and the shared signal
+
+The API's db and transport guards come from one policy map (`d-core-resilience`): timeout,
+breaker, and — when the policy asks — bulkhead, retry and fallback, in a fixed order. Tripping is
+either consecutive (`:failure-threshold`) or rate-based (`:failure-rate` + `:min-calls`) over a
+rolling window, and the cooldown is jittered so replicas do not all probe in the same
+millisecond.
+
+Breakers are per-process, so by default three API replicas hold three independent circuits. Set
+`VALKEY_URI` on the API and a replica that trips publishes a shared open signal (`cb:<name>:open`,
+TTL = cooldown): the other replicas fail fast on their next call instead of each rediscovering
+the outage, and the flag expires by itself if the replica that set it dies.
+
 ### Scenario runs (item 5)
 
 A scenario is a hypothesis with a baseline, a fault timeline and invariants, stored as EDN in

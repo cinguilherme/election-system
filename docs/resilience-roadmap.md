@@ -489,17 +489,63 @@ for rate-based tripping.
 
 ### 8. Circuit breaker v2  `SCALE`
 
-- [ ] Rolling-window error-rate and percentile triggers (not just consecutive counts)
-- [ ] Bounded CAS retries; correct half-open concurrency accounting
-- [ ] `:open-for` with jitter; explicit retry interaction (never retry while open; fallback is
-      not a success)
-- [ ] Optional Valkey-backed breaker so 3 API replicas trip together
-- [ ] Breaker state feeds dependency health; no mutation on `state` reads
+Status: **implemented**. Rolling-window rate tripping, a pure state machine, bounded
+half-open admission, jitter, and a shared open signal verified against a real Valkey.
+
+- [x] Rolling-window error-rate and percentile triggers (not just consecutive counts)
+- [x] Bounded CAS retries; correct half-open concurrency accounting
+- [x] `:open-for` with jitter; explicit retry interaction (never retry while open; fallback is not
+      a success)
+- [x] Optional Valkey-backed breaker so 3 API replicas trip together
+- [x] Breaker state feeds dependency health; no mutation on `state` reads
+
+**As built**
+
+| Piece | Changes |
+| :-- | :-- |
+| `d-core-circuit-breaker/machine.clj` | pure transitions: rolling window, rate vs consecutive tripping, half-open admission, jittered cooldown, `release-probe` |
+| `…/in_memory.clj` | rebuilt on the machine: bounded CAS (`16` attempts), effective-state reads, signal publishing, ignored exceptions release their permit |
+| `…/signal.clj` | `SharedSignal` protocol; in-memory and Valkey implementations (`cb:<name>:open`, TTL) |
+| `d-core-resilience` | policies accept `:failure-rate`/`:min-calls`/jitter/`:signal` and pass them through |
+| `election-system` | API guards use jittered cooldowns; `VALKEY_URI` opts into the shared signal |
+
+Verified (14 tests / 83 assertions in the breaker module, 14 / 49 in resilience):
+- **Rate tripping where consecutive would not**: 4 failures in 10 calls stays closed at a 50%
+  threshold; 5 in 10 trips. A rate breaker without `:min-calls` is refused at construction.
+- **Reads never mutate**: 20 `state` calls leave the snapshot byte-identical; after the cooldown
+  `state` reports `:half-open` while the stored state is still `:open`, and the transition happens
+  on the next admission.
+- **Exactly `half-open-max-calls` probes**: with 2 configured, two blocked probes are admitted and
+  a third call is rejected with `:reason :half-open-saturated`; two successes close the breaker.
+  An `:ignore-ex` failure gives its permit back instead of leaking it.
+- **Jitter** stays inside ±20% over 200 samples and actually varies.
+- **A fallback is not a success**: two fallback-returning failures trip the breaker.
+- **Shared signal over a real Valkey** (started for the test): replica A trips → the key appears →
+  replica B rejects with `:reason :shared-open` while its own state stays `:closed` → `reset!`
+  clears it and B serves again; a 1 s TTL expires by itself.
+- **Property test**: 100 seeded sequences × 120 steps through the transition table, asserting the
+  invariants (valid state, open always has a deadline, a close has an empty window, in-flight in
+  `[0, max]`).
+- The previous 40 assertions (consecutive tripping, half-open recovery, `trip!`/`reset!`,
+  `trip-on`/`ignore-ex`, Integrant) pass unchanged — the rewrite is behaviour-compatible.
+
+Deviations / notes:
+- **Percentile triggers**: the window carries outcomes, so a percentile over *latency* is not
+  possible without also recording durations per call. Ratios are implemented; latency percentiles
+  are not (the guard records them in metrics instead).
+- **The shared signal shares the decision, not the state machine.** Each replica keeps its own
+  window; sharing windows would make replicas agree on a number instead of observing the
+  dependency independently, and a distributed CAS on every call is a latency tax on the failed
+  path.
+- The Valkey signal is verified against a locally started Valkey in the test run; the election
+  stack still needs `VALKEY_URI` set on the API to enable it in a deployment.
 
 **Done when.** A DB outage trips all replicas within one window; half-open admits exactly
-`half-open-max-calls`; property tests cover the transition table.
+`half-open-max-calls`; property tests cover the transition table. — half-open and the property
+test are verified; "all replicas within one window" is implemented via the shared signal and
+verified with two breaker instances over Valkey, not yet with three live API containers.
 
-**Effort** 2 w. **Risk** medium.
+**Effort** 2 w (spent: ~1 d). **Risk** medium.
 
 ### 9. Health v2  `SCALE`
 
