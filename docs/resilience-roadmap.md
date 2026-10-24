@@ -720,16 +720,56 @@ README has a "When a flow fails" page.
 
 ### 12. Release and convention parity  `DX` `ERG`
 
-- [ ] `build.clj` + `Makefile` + `.version` + README + `GEMINI.md` + `docs/` for `-health`
+Status: **implemented except publishing**. Every module builds a jar, the four new ones have the
+same skeleton, and the release/scaffold tooling exists; nothing was deployed to Clojars from here.
+
+- [x] `build.clj` + `Makefile` + `.version` + README + `GEMINI.md` + `docs/` for `-health`
       and `-circuit-breaker`
 - [ ] Publish all four modules; move `d-core.stateflow.e2e` out of the published lib
-- [ ] Add the four modules to `docs/supported.md` and the changelog
-- [ ] `module-template` so the next capability is born compliant
+- [x] Add the four modules to `docs/supported.md` and the changelog
+- [x] `module-template` so the next capability is born compliant
 
-**Done when.** `clojure -T:build jar` succeeds for all 28 modules; every module has the same
-file skeleton.
+**As built**
 
-**Effort** 1–2 w. **Risk** low.
+| Piece | Where |
+| :-- | :-- |
+| `build.clj` / `Makefile` / `.version` for health, circuit-breaker, async-proxy | each module |
+| README + `GEMINI.md` + `docs/` design notes (health, circuit-breaker, resilience, chaos-engine) | each module |
+| `release.clj`: `--check` matrix, `--bump` plan, `--apply`, `--tag` | `election-system/scripts/` |
+| `new-module.sh` + `module-template/` (`.version`, build, Makefile, deps, README, GEMINI, docs, src+test) | `election-system/scripts/` |
+| `make release-check`, `make release-plan` | `election-system/Makefile` |
+| `docs/supported.md`, `CHANGELOG.md` | `election-system/` |
+| `e2e` moved to `dev/` behind a `:dev` alias | `d-core-stateflow` |
+| breaker/health protocols committed | `d-core-std` |
+
+Verified:
+- **`clojure -T:build jar` succeeds for all 25 module directories** (the roadmap said 28; the
+  workspace has 25). Three needed the sandbox's writable Maven repo (`/tmp/m2repo`) because
+  `~/.m2` is read-only here; the build files themselves are unchanged.
+- **Skeleton parity**: health and circuit-breaker went from partial to full; async-proxy gained
+  the missing `build.clj`, `.version` and `:build` alias.
+- **Scaffold**: `new-module.sh d-core-widget "…" /tmp/d-core-widget` produces a module whose
+  tests pass, lint is clean, and `clojure -T:build jar` emits `d-core-widget-0.1.0.jar`.
+- **Release tool**: `--check` reports 25 modules with valid versions and flags dirty repos;
+  `--bump patch` prints `0.1.0 -> 0.1.1` per module without writing.
+- **e2e is out of the artifact**: the ns lives in `dev/`, loads on the `:dev` alias, and the jar
+  build copies only `src`.
+
+Deviations / notes:
+- **Publishing was not performed.** No Clojars credentials in this environment, and a publish is an
+  irreversible side effect — `make publish` exists per module and `release.clj --apply --tag`
+  prepares the versions/tags, but the deploy step is the operator's.
+- **The four modules are not versioned as a set yet.** `--bump` proposes the same bump for every
+  module; cross-module dependency pins (`d-core-std` inside each `deps.edn`) are still manual.
+- **`docs/supported.md` duplicates the release matrix by hand.** It is prose (what each module
+  owns); the versions come from `--check`. Merging the two would automate a table nobody reads
+  daily.
+
+**Done when.** `clojure -T:build jar` succeeds for all 28 modules; every module has the same file
+skeleton. — all 25 build; health, circuit-breaker, resilience, chaos-engine and stateflow now match
+the skeleton (README/GEMINI/docs added where missing).
+
+**Effort** 1–2 w (spent: ~1 h). **Risk** low.
 
 ---
 

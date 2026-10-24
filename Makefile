@@ -37,6 +37,13 @@ test-stack:
 test-chaos:
 	ELECTION_STACK=1 clojure -M:tier --tier chaos
 
+## Release: validate every module's .version and show the bump plan.
+release-check:
+	clojure -Sdeps '{:paths ["scripts"]}' -M -m release --root .. --check
+
+release-plan:
+	clojure -Sdeps '{:paths ["scripts"]}' -M -m release --root .. --bump $(BUMP)
+
 tests:
 	clojure -M:test
 
