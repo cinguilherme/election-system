@@ -1,0 +1,54 @@
+;; Lease-renewal blackhole on the actors tier.
+;;
+;; Every renewal answers {:status :lost} for 20s. With LEASE_TTL_MS=15000 and the
+;; renewer at TTL/3, the lease expires and another replica must take the partition
+;; over. The invariant that matters is that ownership is whole again once the fault
+;; clears -- and that no ballot was lost while it moved.
+{:name "lease-blackhole"
+ :description "Lease renewals answer :lost until the TTL expires, forcing partition takeover"
+ :settle-ms 15000
+ :timeout-ms 180000
+
+ :steady-state
+ [{:id :traffic-flowing
+   :type :prometheus
+   :query "sum(increase(election_votes_cast_total{status=\"accepted\"}[1m]))"
+   :assert [{:path [] :op :gt :value 0}]}
+
+  {:id :ownership-complete-before
+   :type :prometheus
+   :query "sum(election_partitions_total) - sum(election_leaders_held)"
+   :assert [{:path [] :op :lte :value 0}]}]
+
+ :steps
+ [{:action :inject
+   :after-ms 0
+   :note "every renewal is lost, so the TTL must expire"
+   :selector {:service "election-actors"}
+   :rule {:component :lease
+          :op :renew!
+          :fault {:type :return :return {:status :lost}}}}
+
+  {:action :clear
+   :after-ms 25000}]
+
+ :invariants
+ [{:id :fault-fired
+   :type :journal
+   :assert [{:path [:chaos-events] :op :gte :value 1}]}
+
+  ;; A survivor may briefly exceed its fair share (that is the grace window), but by
+  ;; the end every partition must be owned by someone.
+  {:id :ownership-complete-after
+   :type :prometheus
+   :query "sum(election_partitions_total) - sum(election_leaders_held)"
+   :assert [{:path [] :op :lte :value 0}]}
+
+  {:id :audit-consistent-after
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:consistent?] :op :eq :value true}]}
+
+  {:id :no-faults-left
+   :type :faults
+   :assert [{:path [:count] :op :eq :value 0}]}]}

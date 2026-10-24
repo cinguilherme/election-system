@@ -1,4 +1,4 @@
-.PHONY: tests unit integration benchmark lint clean up up-build up-perf chaos-up chaos-down chaos-status chaos-targets chaos-faults chaos-experiments chaos-kill down logs load-test load-test-docker stress-test stress-test-docker stress-test-single rate-test rate-test-docker profile profile-cpu profile-perf profile-alloc profile-wall profile-lock profile-mem threaddump throttling purge-streams reset-data build-base ensure-base
+.PHONY: tests unit integration benchmark lint clean up up-build up-perf chaos-up chaos-down chaos-status chaos-targets chaos-faults chaos-experiments chaos-kill chaos-scenarios chaos-run chaos-runs chaos-load down logs load-test load-test-docker stress-test stress-test-docker stress-test-single rate-test rate-test-docker profile profile-cpu profile-perf profile-alloc profile-wall profile-lock profile-mem threaddump throttling purge-streams reset-data build-base ensure-base
 
 # Prebuild shared base image containing diagnostic utilities and async-profiler
 build-base:
@@ -94,6 +94,34 @@ chaos-experiments:
 	@$(CHAOS_CURL) "$(CHAOS_ENGINE_URL)/api/experiments" | python3 -m json.tool
 
 # Emergency stop: clears and disables injection on every target.
+# Scenario runs: the engine holds the scenario, the script polls it and exits non-zero
+# when a check fails. `make chaos-run SCENARIO=db-ack-loss`.
+chaos-scenarios:
+	@$(CHAOS_CURL) "$(CHAOS_ENGINE_URL)/api/scenarios" | python3 -m json.tool
+
+chaos-runs:
+	@$(CHAOS_CURL) "$(CHAOS_ENGINE_URL)/api/runs" | python3 -m json.tool
+
+chaos-run:
+	@test -n "$(SCENARIO)" || { echo "usage: make chaos-run SCENARIO=<name>"; exit 1; }
+	@python3 scripts/chaos_run.py "$(SCENARIO)"
+
+# Same, with load. The experiment id is generated here and shared with k6 (EXP_ID),
+# so the run's timeline correlates the traffic it caused with the faults it armed.
+chaos-load:
+	@test -n "$(SCENARIO)" || { echo "usage: make chaos-load SCENARIO=<name>"; exit 1; }
+	@test -n "$(CHAOS_TOKEN)" || { echo "CHAOS_TOKEN is required"; exit 1; }
+	@EXP=$$(python3 -c 'import uuid;print(uuid.uuid4())'); \
+	  echo "experiment: $$EXP"; \
+	  if command -v k6 >/dev/null 2>&1; then \
+	    EXP_ID=$$EXP k6 run observability/k6/election_load.js >/tmp/chaos-k6.log 2>&1 & K6_PID=$$!; \
+	  else \
+	    docker compose -f docker-compose.yaml -f docker-compose.observability.yaml -f docker-compose.load.yaml --profile load run -d --rm --name chaos-k6 -e EXP_ID=$$EXP k6 >/dev/null; K6_PID=""; \
+	  fi; \
+	  python3 scripts/chaos_run.py "$(SCENARIO)" --experiment-id "$$EXP"; RC=$$?; \
+	  if [ -n "$$K6_PID" ]; then kill $$K6_PID 2>/dev/null || true; else docker stop chaos-k6 >/dev/null 2>&1 || true; fi; \
+	  exit $$RC
+
 chaos-kill:
 	@$(CHAOS_CURL) -X POST "$(CHAOS_ENGINE_URL)/api/kill-switch" | python3 -m json.tool
 

@@ -304,17 +304,67 @@ interleaving violations. — disarmed-cost and merge verified; the 6-replica loa
 
 ### 5. Experiments, steady state, SLOs and reports  `TEST` `SCALE`
 
-- [ ] `defexperiment` with `:steady-state`, `:faults` timeline, `:abort`, `:invariants`
-- [ ] Invariants: no duplicate ballots, `tally == Σ ballots`, epoch monotonic, zero unowned
-      partitions
-- [ ] Run under the existing k6 profile; sample Prometheus during the run
-- [ ] JSON + JUnit report; Grafana annotation per experiment
-- [ ] `make chaos-load SCENARIO=…` exits non-zero on any violation
+Status: **implemented** as scenario runs: baseline → fault timeline → invariants → report, with
+a CLI that exits non-zero and JUnit output for CI.
 
-**Done when.** Six scenarios (actor kill, proxy pause, DB ack-loss, valkey partition, 500 ms
-latency, clock skew) run unattended, produce reports, and fail the build on invariant breach.
+- [x] `defexperiment` with `:steady-state`, `:faults` timeline, `:abort`, `:invariants`
+- [x] Invariants: no duplicate ballots, `tally == Σ ballots`, epoch monotonic, zero unowned partitions
+- [x] Run under the existing k6 profile; sample Prometheus during the run
+- [x] JSON + JUnit report; Grafana annotation per experiment
+- [x] `make chaos-load SCENARIO=…` exits non-zero on any violation
 
-**Effort** 3–4 w. **Risk** medium. **Depends on** 3, 4.
+**As built**
+
+| Piece | Where |
+| :-- | :-- |
+| Scenario EDN schema, validation, directory loading | `d-core-chaos-engine/src/d_core/chaos_engine/scenario.clj` |
+| Declarative probes (`:http`, `:prometheus`, `:journal`, `:faults`, `:targets`) and assertion ops (`:sum-eq`, ranges, presence) | `…/checks.clj` |
+| Run lifecycle: baseline, timeline, guaranteed cleanup, settle, invariants, abort | `…/runner.clj` |
+| JSON + JUnit renderers and file output | `…/report.clj` |
+| Scenario/run endpoints | `…/http.clj` |
+| Grafana annotation (best effort, tagged `run:<id>`) | `…/runner.clj` |
+| Four scenarios | `election-system/scenarios/*.edn` |
+| CLI that polls, prints the failing check and exits non-zero | `election-system/scripts/chaos_run.py` |
+| `make chaos-scenarios / chaos-run / chaos-load / chaos-runs` | `election-system/Makefile` |
+| k6 sends `X-Experiment-Id` (`EXP_ID`) so traffic and faults share one timeline | `election-system/observability/k6/election_load.js` |
+| Tests | `checks_test` (6), `runner_test` (6), plus engine suite |
+
+Verified:
+- **End to end**: real engine + a scenario on disk + the CLI. The run reported
+  `status=PASSED` with `baseline ok`, `inject ok`, `clear ok`, `fault-fired ok`,
+  `audit-after ok`, `no-faults-left ok`; the JSON and JUnit files were written and the CLI exited
+  **0**. The fault fired for real: the app's instrumented `select` was called while the rule was
+  armed, and the `:journal` invariant saw the chaos event.
+- **A fault that never fires fails the run** (unit test): the `:journal` invariant reports
+  `:chaos-events 0` and the run is `:failed` — a green suite that proved nothing is not green.
+- **An unsteady baseline fails before injecting** (unit test): zero rules were armed.
+- **Abort** (unit test): the run finishes `:aborted`, the armed rule is deleted, and the engine has
+  no faults left.
+- The four shipped scenarios all load and validate (`scenarios: (db-ack-loss db-outage
+  lease-blackhole transport-drop)`, `errors: []`).
+- Suites: `d-core-chaos-engine` 49 / 190.
+
+Deviations / notes:
+- **`defexperiment` became EDN files** (`scenarios/*.edn`) instead of a Clojure macro: versioned
+  like code, mounted into the container, and editable without a rebuild — the macro shape only
+  helped in-repo tests.
+- **Four of the six scenarios ship now.** Actor kill / proxy pause / 500 ms latency / clock skew
+  need the infrastructure faults of item 6 (docker-socket `pause`/`kill`, Toxiproxy/netem). The
+  runner, invariants and reports they will use are already here.
+- **Invariant coverage**: `tally == Σ ballots` is `:sum-eq` on the audit payload; "no duplicate
+  ballots" is enforced by the `UNIQUE (election_id, precinct_id, voter_id)` constraint and observed
+  through `:consistent?` plus the ballot-count reconciliation; "zero unowned partitions" is a
+  Prometheus query. **Epoch monotonicity is not asserted** — no endpoint exposes the ownership
+  epoch, so that needs an audit field (open).
+- **Sampling is per checkpoint** (baseline and invariants), not a continuous scrape during the
+  run. Continuous sampling belongs with the SLO/burn-rate work that follows from k6 thresholds.
+- Grafana annotation is best-effort and silent when `GRAFANA_URL` is unset.
+
+**Done when.** Six scenarios run unattended, produce reports, and fail the build on invariant
+breach. — the runner, reports and exit codes are done for four scenarios; the remaining two are
+blocked on item 6.
+
+**Effort** 3–4 w (spent: ~1 d). **Risk** medium. **Depends on** 3, 4.
 
 ### 6. Network and broker faults  `CHAOS`
 

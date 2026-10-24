@@ -1,0 +1,63 @@
+;; Ack-loss on the ballot ledger.
+;;
+;; The batch is committed and the caller is told the write failed -- the classic
+;; "network dropped after COMMIT". The invariant is that the system is idempotent:
+;; a retry must not duplicate ballots, and the audit must reconcile.
+;;
+;; Requires traffic: the steady-state check fails if no vote is being cast, because
+;; a fault that never fires proves nothing.
+{:name "db-ack-loss"
+ :description "SQL :fail-after on ballot batch inserts: commit succeeds, caller sees an error"
+ :settle-ms 4000
+ :timeout-ms 120000
+
+ :steady-state
+ [{:id :traffic-flowing
+   :type :prometheus
+   :query "sum(increase(election_votes_cast_total{status=\"accepted\"}[1m]))"
+   :assert [{:path [] :op :gt :value 0}]}
+
+  {:id :audit-consistent-before
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:consistent?] :op :eq :value true}]}]
+
+ :steps
+ [{:action :inject
+   :after-ms 0
+   :note "next ballot batch commits, then reports failure"
+   :selector {:service "election-actors"}
+   :rule {:component :db
+          :op :insert-batch!
+          :target :ballots
+          :times 1
+          :fault {:type :fail-after
+                  :ex-msg "simulated ack loss after commit"}}}
+
+  {:action :clear
+   :after-ms 15000}]
+
+ :invariants
+ [{:id :fault-fired
+   :type :journal
+   :assert [{:path [:chaos-events] :op :gte :value 1}]}
+
+  {:id :ledger-has-ballots
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:db-audit :ballot-count] :op :gte :value 1}]}
+
+  {:id :audit-consistent-after
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:consistent?] :op :eq :value true}]}
+
+  {:id :tally-equals-ballots
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:db-audit :ballot-tallies] :op :sum-eq
+             :value-path [:db-audit :ballot-count]}]}
+
+  {:id :no-faults-left
+   :type :faults
+   :assert [{:path [:count] :op :eq :value 0}]}]}

@@ -1,0 +1,63 @@
+;; Database read outage on the API tier.
+;;
+;; Every SELECT throws for 12s. The election-db breaker should trip, /audit should
+;; fail fast with 503 instead of hanging, and once the fault clears the breaker must
+;; recover on its own (reset-timeout-ms = 5000).
+{:name "db-outage"
+ :description "SQL reads throw until the API circuit breaker trips, then must recover"
+ :settle-ms 12000
+ :timeout-ms 150000
+
+ :steady-state
+ [{:id :traffic-flowing
+   :type :prometheus
+   :query "sum(increase(election_votes_cast_total{status=\"accepted\"}[1m]))"
+   :assert [{:path [] :op :gt :value 0}]}
+
+  {:id :breaker-closed-before
+   :type :prometheus
+   :query "max(circuit_breaker_state{name=\"election-db\"})"
+   :assert [{:path [] :op :eq :value 0}]}]
+
+ :steps
+ [{:action :inject
+   :after-ms 0
+   :note "reads fail; the API keeps taking votes because writes are elsewhere"
+   :selector {:service "election-api-backend"}
+   :rule {:component :db
+          :op :select
+          :fault {:type :throw :ex-msg "simulated database read outage"}}}
+
+  {:action :clear
+   :after-ms 12000}]
+
+ :invariants
+ [{:id :fault-fired
+   :type :journal
+   :assert [{:path [:chaos-events] :op :gte :value 3}]}
+
+  ;; The breaker must have opened during the outage -- otherwise the fault never
+  ;; reached the path it was aimed at.
+  {:id :breaker-tripped
+   :type :prometheus
+   :query "sum(increase(circuit_breaker_transitions_total{name=\"election-db\",to=\"open\"}[10m]))"
+   :assert [{:path [] :op :gte :value 1}]}
+
+  {:id :breaker-recovered
+   :type :prometheus
+   :query "max(circuit_breaker_state{name=\"election-db\"})"
+   :assert [{:path [] :op :eq :value 0}]}
+
+  {:id :audit-usable-after
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:consistent?] :op :eq :value true}]}
+
+  {:id :writes-continued
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:db-audit :ballot-count] :op :gt :value 0}]}
+
+  {:id :no-faults-left
+   :type :faults
+   :assert [{:path [:count] :op :eq :value 0}]}]}

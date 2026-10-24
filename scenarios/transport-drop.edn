@@ -1,0 +1,51 @@
+;; Precinct -> national tell blackhole.
+;;
+;; Fire-and-forget tally deltas to :election-tally are silently dropped for 20s.
+;; Ballots keep landing in the ledger; the question is whether the national tally
+;; repairs itself from later sends.
+;;
+;; If :audit-consistent-after fails here, the tell path is NOT self-healing: a
+;; dropped delta is lost until a rebuild. That is a finding about the system, not a
+;; flaky test.
+{:name "transport-drop"
+ :description "Actor transport drops precinct->tally tells; the projection must converge"
+ :settle-ms 20000
+ :timeout-ms 180000
+
+ :steady-state
+ [{:id :traffic-flowing
+   :type :prometheus
+   :query "sum(increase(election_votes_cast_total{status=\"accepted\"}[1m]))"
+   :assert [{:path [] :op :gt :value 0}]}]
+
+ :steps
+ [{:action :inject
+   :after-ms 0
+   :note "tally deltas are swallowed"
+   :selector {:service "election-actors"}
+   :rule {:component :actor-transport
+          :op :send-message!
+          :target :election-tally
+          :fault {:type :drop}}}
+
+  {:action :clear
+   :after-ms 20000}]
+
+ :invariants
+ [{:id :fault-fired
+   :type :journal
+   :assert [{:path [:chaos-events] :op :gte :value 1}]}
+
+  {:id :ledger-has-ballots
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:db-audit :ballot-count] :op :gt :value 0}]}
+
+  {:id :projection-converged
+   :type :http
+   :url "http://election-api-backend:8080/v1/elections/national-2026/audit"
+   :assert [{:path [:consistent?] :op :eq :value true}]}
+
+  {:id :no-faults-left
+   :type :faults
+   :assert [{:path [:count] :op :eq :value 0}]}]}

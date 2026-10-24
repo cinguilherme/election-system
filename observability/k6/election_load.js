@@ -20,6 +20,9 @@ const SLEEP_S = parseFloat(__ENV.SLEEP_S || '0.001');
 const VOTER_SLEEP_S = parseFloat(__ENV.VOTER_SLEEP_S || SLEEP_S.toString());
 const OBSERVER_SLEEP_S = parseFloat(__ENV.OBSERVER_SLEEP_S || '0.1');
 const REQ_TIMEOUT = __ENV.REQ_TIMEOUT || '5s';
+// Correlation id for chaos experiments: the API binds it per request and every
+// journaled side effect (and the actor messages it sends) carries it.
+const EXP_ID = __ENV.EXP_ID || null;
 const CANDIDATES = ['alice', 'bob', 'charlie', 'diana'];
 
 // Helper to calculate VU distribution between voters (~90%) and observers (~10%)
@@ -183,7 +186,9 @@ function castOneVote(seq) {
   const precinctId = `${state}-p${precinctIdx}`;
   const candidateId = CANDIDATES[(precinctIdx + __ITER) % CANDIDATES.length];
   const reqParams = {
-    headers: { 'Content-Type': 'application/json' },
+    headers: EXP_ID
+      ? { 'Content-Type': 'application/json', 'X-Experiment-Id': EXP_ID }
+      : { 'Content-Type': 'application/json' },
     timeout: REQ_TIMEOUT,
     responseType: 'none',
   };

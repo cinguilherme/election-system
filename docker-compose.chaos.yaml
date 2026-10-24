@@ -56,6 +56,14 @@ services:
       CHAOS_REFRESH_MS: "${CHAOS_REFRESH_MS:-10000}"
       CHAOS_TIMEOUT_MS: "${CHAOS_TIMEOUT_MS:-2000}"
       CHAOS_ALLOWED_COMPONENTS: "${CHAOS_ALLOWED_COMPONENTS:-db,actor-transport,actor-client,actor-delivery,actor-effect,snapshot,lease,circuit-breaker}"
+      # Scenarios are deployment configuration: mounted, not baked into the image.
+      CHAOS_SCENARIOS_DIR: "/workspace/scenarios"
+      CHAOS_REPORTS_DIR: "/workspace/reports"
+      CHAOS_PROMETHEUS_URL: "http://prometheus:9090"
+      GRAFANA_URL: "${GRAFANA_URL:-http://grafana:3000}"
+    volumes:
+      - ./scenarios:/workspace/scenarios:ro
+      - chaos-reports:/workspace/reports
     depends_on:
       - election-actors
       - election-api-backend
@@ -92,3 +100,6 @@ services:
       CHAOS_MAX_TOTAL_HITS: "${CHAOS_MAX_TOTAL_HITS:-100000}"
     expose:
       - "8082"
+
+volumes:
+  chaos-reports:

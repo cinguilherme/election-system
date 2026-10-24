@@ -87,6 +87,31 @@ curl -s "localhost:8088/api/experiments/$EXP_ID/journal" -H "X-Chaos-Token: $CHA
 The reply is one timeline ordered by `(timestamp, node, seq)` with per-replica spans, clock
 skew and unreachable replicas named.
 
+### Scenario runs (item 5)
+
+A scenario is a hypothesis with a baseline, a fault timeline and invariants, stored as EDN in
+[`scenarios/`](scenarios) and mounted into the engine:
+
+```bash
+make chaos-scenarios                    # what the engine found on disk
+make chaos-run SCENARIO=db-ack-loss     # against a stack that already has traffic
+make chaos-load SCENARIO=db-ack-loss    # starts k6 too, sharing one experiment id
+make chaos-runs                         # history
+```
+
+`chaos-run` exits non-zero when the baseline is not steady, when the fault never fired, or when an
+invariant breaks; the report (`/api/runs/:id/report`, or the JSON/JUnit files in the engine's
+`CHAOS_REPORTS_DIR`) says which check failed and what it saw.
+
+| Scenario | Hypothesis |
+| :-- | :-- |
+| `db-ack-loss` | a ballot batch commits but the caller sees an error → retries stay idempotent |
+| `db-outage` | reads fail → the API breaker trips, then recovers on its own |
+| `lease-blackhole` | renewals are lost → partitions move, then ownership is whole again |
+| `transport-drop` | precinct→tally tells are dropped → the projection must converge |
+
+The kill/pause/latency/clock-skew scenarios need the infrastructure faults of roadmap item 6.
+
 With `CHAOS_ENABLED` unset (the default stack) no decorator, journal or admin port exists.
 Roadmap and trade-offs: [docs/resilience-roadmap.md](docs/resilience-roadmap.md).
 
