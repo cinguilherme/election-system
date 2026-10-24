@@ -13,8 +13,7 @@
             [d-core.health.http :as health-http]
             [ring.adapter.jetty :as jetty]
             [cheshire.core :as json]
-            [clojure.string :as str])
-  (:import (java.security MessageDigest)))
+            [clojure.string :as str]))
 
 (def ^:private default-admin-port 8082)
 
@@ -23,17 +22,6 @@
   {:status status
    :headers {"content-type" "application/json"}
    :body (json/generate-string body)})
-
-(defn- constant-time=
-  [a b]
-  (and a b
-       (MessageDigest/isEqual (.getBytes ^String a "UTF-8")
-                              (.getBytes ^String b "UTF-8"))))
-
-(defn- chaos-authorized?
-  [token req]
-  (or (str/blank? (str token))
-      (constant-time= (str token) (get-in req [:headers "x-chaos-token"]))))
 
 (defn make-handler
   "Builds the admin Ring handler.
@@ -47,7 +35,11 @@
      :token           - shared secret required on `/_chaos/*`"
   [{:keys [role instance-id controller journal health-registry token]}]
   (let [chaos-handler (when (or controller journal)
-                        (chaos-http/make-chaos-handler {:controller controller :journal journal}))
+                        ;; Auth lives in d-core-chaos so every consumer of the control
+                        ;; plane gets the same guard, not just this app.
+                        (-> (chaos-http/make-chaos-handler {:controller controller
+                                                            :journal journal})
+                            (chaos-http/wrap-chaos-auth {:token token})))
         live-handler (when health-registry (health-http/make-live-handler health-registry))
         ready-handler (when health-registry (health-http/make-ready-handler health-registry))
         health-handler (when health-registry (health-http/make-health-handler health-registry))
@@ -72,11 +64,9 @@
             (not chaos-handler)
             (json-response 404 {:status "not-found" :reason "chaos-disabled"})
 
-            (not (chaos-authorized? token req))
-            (json-response 401 {:status "unauthorized"
-                                :reason "missing or invalid X-Chaos-Token"})
-
             :else
+            ;; The token guard is part of `chaos-handler`; a missing or wrong token
+            ;; has already produced a 401 by the time we get here.
             (or (chaos-handler req)
                 (json-response 404 {:status "not-found" :uri uri})))
 
@@ -89,6 +79,10 @@
                               :endpoints (cond-> ["/live" "/ready" "/health"]
                                            chaos-handler (into ["/_chaos/status"
                                                                "/_chaos/rules"
+                                                               "/_chaos/rules/:id"
+                                                               "/_chaos/probe"
+                                                               "/_chaos/audit"
+                                                               "/_chaos/kill-switch"
                                                                "/_chaos/journal"]))})
 
           :else

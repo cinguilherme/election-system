@@ -21,12 +21,16 @@
   "Builds the chaos runtime for a node.
 
    Options:
-     :enabled?      - master switch (default false)
-     :journal-mode  - :full (record events) or :off (inject faults, record nothing)
-     :max-events    - journal ring-buffer size (default 50000)
-     :instance-id   - node identity stamped on every journal event
-     :rules         - optional pre-armed rules (tests, replay)"
-  [{:keys [enabled? journal-mode max-events instance-id rules]
+     :enabled?           - master switch (default false)
+     :journal-mode       - :full (record events) or :off (inject faults, record nothing)
+     :max-events         - journal ring-buffer size (default 50000)
+     :instance-id        - node identity stamped on every journal event
+     :rules              - optional pre-armed rules (tests, replay)
+     :allowed-components - components this environment may fault (nil = all)
+     :max-total-hits     - blast-radius cap; reaching it disables the controller
+     :audit-max-entries  - audit ring size"
+  [{:keys [enabled? journal-mode max-events instance-id rules
+           allowed-components max-total-hits audit-max-entries]
     :or {enabled? false
          journal-mode :full
          max-events default-max-events}}]
@@ -38,7 +42,11 @@
        :journal-mode :off
        :instance-id instance-id}
       {:enabled? true
-       :controller (ctrl/make-controller {:rules (vec (or rules []))})
+       :controller (ctrl/make-controller
+                    (cond-> {:rules (vec (or rules []))}
+                      allowed-components (assoc :allowed-components allowed-components)
+                      max-total-hits (assoc :max-total-hits max-total-hits)
+                      audit-max-entries (assoc :audit-max-entries audit-max-entries)))
        :journal (when (= :full mode)
                   (journal/make-journal {:max-events (long (or max-events default-max-events))}))
        :journal-mode mode

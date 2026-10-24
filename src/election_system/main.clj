@@ -121,11 +121,21 @@
      ;; Chaos is opt-in. docker-compose.chaos.yaml is the only place that sets
      ;; CHAOS_ENABLED=1; with it off no decorator, journal or admin listener is
      ;; created, so the request path is the plain one.
+     ;;
+     ;; CHAOS_ALLOWED_COMPONENTS narrows what a rule may target (comma-separated,
+     ;; nil = no restriction); CHAOS_MAX_TOTAL_HITS is the blast-radius cap -- when
+     ;; it is reached the controller disables itself instead of injecting forever.
      :chaos {:enabled? (env-bool "CHAOS_ENABLED" false)
              :admin-port (env-long "CHAOS_ADMIN_PORT" 8082)
              :admin-token (env-str "CHAOS_ADMIN_TOKEN" nil)
              :journal-mode (-> (env-str "CHAOS_JOURNAL_MODE" "full") str/lower-case keyword)
-             :max-events (env-long "CHAOS_MAX_EVENTS" 50000)}
+             :max-events (env-long "CHAOS_MAX_EVENTS" 50000)
+             :allowed-components (some->> (env-list "CHAOS_ALLOWED_COMPONENTS")
+                                          (map #(keyword (str/lower-case %)))
+                                          set
+                                          not-empty)
+             :max-total-hits (env-long "CHAOS_MAX_TOTAL_HITS" 100000)
+             :audit-max-entries (env-long "CHAOS_AUDIT_MAX_ENTRIES" 2000)}
      :db-opts {:engine engine
                :jdbc-url jdbc-url
                :username db-user
