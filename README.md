@@ -87,6 +87,14 @@ curl -s "localhost:8088/api/experiments/$EXP_ID/journal" -H "X-Chaos-Token: $CHA
 The reply is one timeline ordered by `(timestamp, node, seq)` with per-replica spans, clock
 skew and unreachable replicas named.
 
+### Test tiers
+
+The state-flow suite is tiered: `make test-flow` runs the in-process clusters, `make test-stack`
+the same flows against `docker-compose.yaml` + `docker-compose.chaos.yaml` (needs
+`ELECTION_STACK=1` and a running stack), and `make test-chaos` the chaos scenarios. A flow body
+is shared between tiers — only the world changes — and probabilistic faults carry a `:seed` that
+is recorded in the run report, so a failing experiment replays.
+
 ### Health and lifecycle
 
 Every tier answers three different questions:

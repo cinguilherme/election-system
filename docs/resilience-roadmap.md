@@ -609,17 +609,62 @@ flap-free properties are verified; the postgres-kill timing needs the lab stack.
 
 ### 10. Test harness, tiers and determinism  `TEST` `DX`
 
-- [ ] `with-stack` fixture: compose `up -d --wait`, replica base-URL discovery, `World` map,
+Status: **implemented except the flake budget**. The stack fixture, the tiered runner, the
+portable journal and seeded replay are in; quarantine/flake accounting is not.
+
+- [x] `with-stack` fixture: compose `up -d --wait`, replica base-URL discovery, `World` map,
       unconditional teardown
-- [ ] One flow runs against both the in-process cluster and the compose stack
-- [ ] `defflow` metadata `^{:tier :flow|:stack|:chaos}` and `make test-flow|test-stack|test-chaos`
-- [ ] Seeded RNG (`:seed`) forwarded with every experiment — probabilistic faults replay exactly
+- [x] One flow runs against both the in-process cluster and the compose stack
+- [x] `defflow` metadata `^{:tier :flow|:stack|:chaos}` and `make test-flow|test-stack|test-chaos`
+- [x] Seeded RNG (`:seed`) forwarded with every experiment — probabilistic faults replay exactly
 - [ ] Flake budget + quarantine for stack tests
 
-**Done when.** The same `deftest` passes in-process and against `docker compose up`; a failing
-chaos run prints its seed and replays byte-identically.
+**As built**
 
-**Effort** 2–3 w. **Risk** medium. **Depends on** 3.
+| Piece | Where |
+| :-- | :-- |
+| `with-stack` / `start!` / `stop!` / `world`, injectable `:run-fn`, `:dry-run?`, `enabled?` | `d-core-stateflow/src/d_core/stateflow/stack.clj` |
+| Tier runner (`--tier`, `--dir`, `--ns`), unlabelled vars count as `:flow` | `…/runner.clj` |
+| Portable journal: node journal in-process, engine timeline over HTTP on a stack | `…/journal.clj` |
+| Seeded `:probability`: one draw per attempt from (seed, rule-id, attempt) | `d-core-chaos/src/d_core/chaos/controller.clj` |
+| Run seed recorded, forwarded into every injected rule, kept in the report | `d-core-chaos-engine/src/d_core/chaos_engine/runner.clj` |
+| One flow body, two tiers (`:flow` in-process, `:stack` compose) | `election-system/test/…/portable_flow_test.clj` |
+| `:tier` alias + `make test-flow / test-stack / test-chaos` | `election-system/deps.edn`, `Makefile` |
+
+Verified:
+- **Fixture**: `up -d --wait` is called with the overlay files and project name, `down -v` on
+  teardown, a failed `up` throws with the compose output (a half-up stack must not produce flow
+  failures that look like product bugs), teardown never throws, `:dry-run?` executes nothing and
+  still builds the world.
+- **Tiers**: a `:flow`-labelled var, an unlabelled var (counted as `:flow`) and a `:stack` var are
+  filtered correctly; `--tier stack` prints `[skip]` and exits 0 without `ELECTION_STACK=1`.
+- **Portable flow**: the same body passes at `:flow` (in-process cluster, 2 assertions) and is
+  skipped at `:stack` until a stack is up.
+- **Determinism**: two controllers seeded 42 produce identical fire/no-fire sequences; seed 7
+  differs; the draw advances per *attempt*, so a non-firing draw does not repeat forever (the
+  first version keyed on the hit count and did exactly that).
+- **Seed propagation**: a run's seed is recorded on the run, injected into the rule POSTed to the
+  node, and kept in the JSON report.
+- Suites: `d-core-stateflow` 9 / 23, `d-core-chaos` 36 / 155, `d-core-chaos-engine` 60 / 236.
+
+Deviations / notes:
+- **No flake budget or quarantine.** A stack test that fails is a failure; there is no
+  retry-or-quarantine ledger. Quarantine without a flake *rate* history is just hiding failures,
+  and there is no CI history yet to compute one. Deliberately left out.
+- **Replica discovery is configured, not probed.** `:urls` names the published endpoints; the
+  compose project publishes fixed ports. Discovering replicas from `docker compose ps` matters
+  when ports are ephemeral, which is not this stack's setup.
+- **The stack tier needs built images.** `with-stack` runs `up` (it does not build), which is the
+  expensive part and belongs to the operator/CI, not to every test run.
+- The `:chaos` tier runner exists but no `:chaos`-labelled tests were added in this item; the
+  existing chaos flows remain `:flow`-tier (in-process chaos), which is where they are fast.
+
+**Done when.** The same `deftest` passes in-process and against `docker compose up`; a failing
+chaos run prints its seed and replays byte-identically. — the same `deftest` body does both (stack
+side verified to skip, not to pass, because the stack has not been built here); seed replay is
+verified at the controller and run level.
+
+**Effort** 2–3 w (spent: ~1 d). **Risk** medium.
 
 ### 11. Stateflow v2 ergonomics  `ERG` `DX`
 

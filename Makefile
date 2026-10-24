@@ -26,6 +26,17 @@ ensure-base:
 	  fi; \
 	done
 
+## Tiered tests (item 10): a flow must pass in-process before it is trusted on a
+## stack, and chaos runs against a stack that is already up.
+test-flow:
+	clojure -M:tier --tier flow
+
+test-stack:
+	ELECTION_STACK=1 clojure -M:tier --tier stack
+
+test-chaos:
+	ELECTION_STACK=1 clojure -M:tier --tier chaos
+
 tests:
 	clojure -M:test
 
