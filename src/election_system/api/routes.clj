@@ -342,9 +342,13 @@
         ;; recorded from the same request context.
         experiment-handler (wrap-experiment-context base-handler)
         traced-handler (otel/wrap-http-tracing experiment-handler {:service "election-api"
-                                                                   :normalize-uri-fn normalize-election-uri})]
+                                                                   :normalize-uri-fn normalize-election-uri})
+        ;; One correlation id for the request and every hop it causes: the gRPC client
+        ;; interceptor propagates the bound context as x-correlation-id, the actors'
+        ;; server interceptor creates a child span under the same trace id.
+        correlated-handler (otel/wrap-correlation-id traced-handler)]
     (if eff-metrics
-      (wrappers/wrap-http-metrics traced-handler eff-metrics {:service "election-api"
-                                                             :normalize-uri-fn normalize-election-uri})
-      traced-handler)))
+      (wrappers/wrap-http-metrics correlated-handler eff-metrics {:service "election-api"
+                                                                 :normalize-uri-fn normalize-election-uri})
+      correlated-handler)))
 
