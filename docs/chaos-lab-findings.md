@@ -60,7 +60,56 @@ balancer, and the surviving replica served traffic throughout, so "failback" nev
 happened from the balancer's point of view. The claim needs a watch on the **restarted
 replica's own** `/health` (with `:act :last`), not a probe through the LB.
 
-## F4 — D2 rebalance RTO is not measured yet (tooling, pending rerun)
+## F4 — D2 runs correctly now; the rebalance does not happen within 45 s (measured, under load)
+
+With the tooling fixed (kill resolves to the replica being watched, verified in the engine:
+`actors-3` = 172.28.0.20 = registry replica 2; watch on replica 1 = 172.28.0.18), D2 ran
+against the 2-replica lab **while the 100-VU soak was running**:
+
+| Evidence | Result |
+| :-- | :-- |
+| Kill / restart steps | fired on `election-system-election-actors-3` (replica 2) |
+| Survivor's owned partitions | **16 → stayed 16** for the whole 45 s window (claim expected 32) |
+| Write error budget | **100%** (168/168 failed) — the API answered **503 circuit-breaker-open** |
+| DB-side invariant | failed |
+
+So the rebalance RTO is still unmeasured, but the reason is now the system, not the tool:
+the survivor never reported taking over the dead replica's partitions, and the API's
+`election-async-proxy` breaker opened under load and stopped serving. Two things to
+separate — whether the rebalance ever happens and how long it takes, and whether the
+breaker is too eager under load — before D2's numbers can be quoted.
+
+Earlier revision of this finding (kept for the trail): the first D2 attempts killed the
+watched container because replica identity was resolved twice against different orderings.
+That is fixed and verified; the IP ordering is `actors-1=.18`, `actors-3=.20`, i.e. the
+container names are not in IP order.
+
+## F6 — the chaos runtime was disabled by `CHAOS_ENABLED=1` (fixed)
+
+`env-bool` used `Boolean/parseBoolean`, which only accepts `"true"`. Every compose file
+sets `CHAOS_ENABLED=1`, so the runtime was off: no admin listener on 8082, no journal, no
+instrumentation. The control room showed every replica as unreachable because it probes
+`:8082/health`, which did not exist. Fixed in `parse-bool` (accepts 1/true/yes/on) with a
+test; `[chaos] enabled … admin-port=8082` now appears at startup.
+
+## F7 — consistency is a property at rest, not under load (fixed in the drills)
+
+While writes are in flight, the audit's live tally and the DB ballot count legitimately
+differ (the tally leads/ lags by the in-flight window). The drills required
+`consistent?: true` at steady state, so **every drill refused to start while the soak was
+running** — this is what the failed runs with no steps were. The drills now assert that the
+API and DB are serving and that the DB-side tallies sum to the ballot count; reconciliation
+is a separate check at rest.
+
+## F8 — the async-proxy breaker opens under load + a node loss (open)
+
+During the driven soak (100 VUs) and an actor kill, the API's `election-async-proxy` breaker
+opened and `/audit` returned 503 for the rest of the drill; the write probe failed 100%.
+The breaker should half-open and close when the proxy recovers; it did not within the
+window. This needs its own investigation: breaker reset behaviour under sustained load and
+recovery.
+
+## F4 (original) — tooling history
 
 The first D2 attempt killed the container that was being watched as the survivor. Cause:
 replica identity was resolved twice, against two orderings (the registry sorts by IP, docker
