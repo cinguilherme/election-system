@@ -140,6 +140,16 @@ node creates one and passes it to ownership and the API. `wrap-request-log` (in
 `:error`, 4xx at `:warn`. Remaining L0 events: breaker transitions, vote rejections,
 chaos step verdicts.
 
+**L2 — built.** Every request line carries two ids: `traceId` (d-core, the id that survives
+HTTP → gRPC → actors) and `otelTraceId` (hex, sampled requests only). The Loki datasource
+has a derived field matching `otelTraceId` and linking to the Jaeger datasource; a **Logs**
+dashboard (uid `logs`) has a service variable, a logs panel and a log-volume panel; a drill
+run's page links to it with the run's time window.
+
+Verified end to end: a log line with `otelTraceId=3f2e7016…` resolves in Jaeger to a trace
+with 4 spans across 2 services. Click-through works; the correlation id on the same line
+still ties the request across services.
+
 ## Phases
 
 ### L0 — use the Duct logger (the ecosystem's), not a new one

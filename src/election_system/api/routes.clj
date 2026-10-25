@@ -341,17 +341,18 @@
         ;; Inside tracing, so the journal event and the span it belongs to are
         ;; recorded from the same request context.
         experiment-handler (wrap-experiment-context base-handler)
-        traced-handler (otel/wrap-http-tracing experiment-handler {:service "election-api"
-                                                                   :normalize-uri-fn normalize-election-uri})
         ;; One correlation id for the request and every hop it causes: the gRPC client
         ;; interceptor propagates the bound context as x-correlation-id, the actors'
         ;; server interceptor creates a child span under the same trace id.
-        ;; Logged first, then correlated around it: the request log must run while the
-        ;; correlation binding is still active, or its line has no trace id.
+        ;; Logging happens INSIDE the OTel span (so the line carries otelTraceId, the id
+        ;; Jaeger knows) and inside the correlation binding (so it carries the d-core
+        ;; traceId used across services). Both ids on one line.
         logged-handler (if (:logger ctx)
-                         (otel/wrap-request-log traced-handler (:logger ctx) {:service "election-api"})
-                         traced-handler)
-        correlated-handler (otel/wrap-correlation-id logged-handler)]
+                         (otel/wrap-request-log experiment-handler (:logger ctx) {:service "election-api"})
+                         experiment-handler)
+        traced-handler* (otel/wrap-http-tracing logged-handler {:service "election-api"
+                                                               :normalize-uri-fn normalize-election-uri})
+        correlated-handler (otel/wrap-correlation-id traced-handler*)]
     (if eff-metrics
       (wrappers/wrap-http-metrics correlated-handler eff-metrics {:service "election-api"
                                                                  :normalize-uri-fn normalize-election-uri})

@@ -27,3 +27,11 @@ datasources:
     editable: true
     jsonData:
       maxLines: 2000
+      # Click a JSON log line and open the trace it belongs to. The matcher is the
+      # otelTraceId field the request log emits (hex, sampled requests only).
+      derivedFields:
+        - name: trace
+          matcherType: regex
+          matcherRegex: '"otelTraceId":"([a-f0-9]+)"'
+          url: '${__value.raw}'
+          datasourceUid: jaeger
