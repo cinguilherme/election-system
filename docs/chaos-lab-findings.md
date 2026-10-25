@@ -126,3 +126,22 @@ rebalance RTO until it exists.**
 `mime.types` resource is absent from the uberjar), so the browser refused the module
 script. The BFF now names the types it serves. Verified: `text/javascript`, `text/css`,
 deep links return the shell.
+
+## F9 — baked configs drift from the repo; the dashboards broke that way (fixed, operational)
+
+Every dashboard panel except the container one showed "No data". Prometheus's targets were
+all down with `lookup election-api-1 on 127.0.0.11:53: no such host`: the **running** config
+was a static one listing old container names (`election-api-1`, `async-proxy-2`, …), while
+the repo's `prometheus.yml` had already moved to `dns_sd_configs` with IP resolution. The
+config is **baked into the image** (`COPY --chmod`), and `make up` uses the registry's
+`latest`, so the image still carried the old file.
+
+Fix: rebuild `election-system-prometheus` from the current config and recreate the
+container. 11/11 targets up, votes/actor/sql/http metrics flowing.
+
+The lesson is the one that also bit the API and gateway images: **a compose file change is
+not live until the image is rebuilt and pushed** (or built locally). `make up` will happily
+run a stale baked config forever.
+
+Under the still-running 100-VU soak the dashboards now show ~11 5xx/s from the API
+(`http_requests_total{status=~"5.."}`) — the breaker finding F8, visible rather than hidden.
