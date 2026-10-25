@@ -14,9 +14,9 @@
 ;;                            be *above* the survivor's pre-kill share, otherwise the claim
 ;;                            is already true and measures nothing.
 ;;
-;; The error budget is 5% rather than 0.5%: the probe reuses one voter id, and the API may
-;; reject a duplicate vote while the cluster is rebalancing. That is a property of the probe,
-;; not of the system; the data invariant below is strict.
+;; The probe's voter id contains ${n}, replaced per request, so every write is a new
+;; ballot. Without that the API would (correctly) answer 409 to every duplicate and the
+;; budget would measure the probe, not the system.
 {:name "drill-rebalance-actors-replica"
  :description "Kill one actors replica; prove partitions rebalance, writes continue and data stays exact"
  :params {:replica {:type :int :default 2 :min 1 :max 3}
@@ -38,7 +38,7 @@
    :url "http://election-api:8080/v1/elections/national-2026/votes"
    :method :post
    :body {:precinct_id "p-1"
-          :voter_id "drill-voter"
+          :voter_id "drill-${n}"
           :candidate_id "alice"}
    :rate-rps 5
    :duration-ms 45000}
@@ -75,7 +75,7 @@
 
   {:id :error-budget
    :type :error-budget
-   :max-rate 0.05}]
+   :max-rate 0.005}]
 
  :invariants
  [{:id :audit-after
