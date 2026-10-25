@@ -156,3 +156,22 @@ belonged to other containers. `docker compose restart election-api` fixed it (6/
 Operational rule for the lab: after recreating API replicas, restart the balancer — or give
 the upstream a `resolver` and resolve per request. This also affects drills that restart
 replicas, and is worth remembering when the 500s appear in a Grafana panel.
+
+## F11 — the engine pinned targets resolved at startup (fixed)
+
+The 4 s DB delay "did not work": the fault was armed on `172.28.0.21`, an IP the API
+container had **before** it was recreated (the real replicas were `.12`/`.22`). The
+registry parsed `CHAOS_TARGETS` once at construction and `refresh!` only re-probed those
+same candidates, so every refresh kept the dead address. A fault armed on a dead IP is a
+fault that never fires, and the control room showed the live replicas as unreachable.
+
+Fixed:
+- `refresh!` re-resolves the stored spec on every pass (DNS is re-read), and
+- `create-fault!` refreshes before resolving, closing the window right after a recreation.
+
+Verified: after recreating both API replicas the target list tracked `.12`/`.16` (no stale
+`.21`), and the delay fault fired — a 1.2 s × 3-select delay produced a 3.8 s request
+(`200`), visible as `db-audit 4055ms slow=true` and `http-request 4162ms slow=true`.
+
+The chaos engine also logs `fault-armed` / `fault-cleared` lines (id, selector, targets,
+status) so the injections appear next to the application logs in Loki.

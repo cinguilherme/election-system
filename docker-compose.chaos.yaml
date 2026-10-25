@@ -79,6 +79,9 @@ services:
       # Service DNS expands to every replica IP, so `replica: 2` means the second
       # container of the service, not "whichever one answered".
       CHAOS_TARGETS: "election-actors:8082,election-api-backend:8082"
+      # Re-resolve quickly: the registry refreshes DNS every CHAOS_REFRESH_MS, and the JVM
+      # would otherwise cache a replica's old IP for its default TTL after a recreation.
+      JAVA_TOOL_OPTIONS: "-Dsun.net.inetaddr.ttl=5 -Dsun.net.inetaddr.negative.ttl=0"
       CHAOS_ENGINE_PORT: "8088"
       CHAOS_TOKEN: "${CHAOS_TOKEN:?set CHAOS_TOKEN (any random string) before using the chaos overlay}"
       CHAOS_REFRESH_MS: "${CHAOS_REFRESH_MS:-10000}"

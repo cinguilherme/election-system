@@ -167,6 +167,28 @@ High-cardinality values are **filtered in queries**, not indexed as labels:
   proxy could serve log reads later. Documented here so it is a decision, not an accident.
 - No authentication. Loopback only; never expose Loki/Alloy beyond 127.0.0.1.
 
+## Isolating the log: slow paths without a CID
+
+To find "where it got slow" before knowing any CID, the request log elevates:
+
+- `:http-request` with `slow: true` when the response takes ≥ `SLOW_REQUEST_MS`
+  (default 500 ms);
+- `:downstream-call` with `slow: true` when a dependency call takes ≥ `SLOW_CALL_MS`
+  (default 300 ms).
+
+Query (no cid needed): `{compose_service="election-api-backend"} | json | slow="true"`.
+The lines carry the cid, so a slow request leads to its chain with one more filter:
+
+```
+{compose_service="election-api-backend"} | json | slow="true"
+  :downstream-call db-audit 4055ms slow=true  cid=…lnzihzac
+  :http-request               4162ms 200 slow=true  cid=…lnzihzac
+```
+
+Chaos injections are visible in the same place: the engine logs `fault-armed` and
+`fault-cleared` with the fault id, selector and target count, so "chaos is armed" is a log
+line next to the application's own.
+
 ## Status
 
 **L1 — built and verified.** Loki 3.4.2 (pinned: 3.5.0 rejected Alloy's pushes with

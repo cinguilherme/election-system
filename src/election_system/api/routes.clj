@@ -18,6 +18,9 @@
             [election-system.log :as log]
             [reitit.ring :as ring]))
 
+(def ^:private slow-call-ms
+  (or (some-> (System/getenv "SLOW_CALL_MS") parse-long) 300))
+
 (defn- call-logged
   "One line per downstream call: which dependency, how long, how it ended.
 
@@ -27,11 +30,12 @@
   [logger label f]
   (let [started (System/currentTimeMillis)]
     (try
-      (let [result (f)]
-        (log/log logger :info :downstream-call
-                 {:call label
-                  :durationMs (- (System/currentTimeMillis) started)
-                  :outcome :ok})
+      (let [result (f)
+            duration (- (System/currentTimeMillis) started)
+            slow? (>= duration slow-call-ms)]
+        (log/log logger (if slow? :warn :info) :downstream-call
+                 (cond-> {:call label :durationMs duration :outcome :ok}
+                   slow? (assoc :slow true :slowThresholdMs slow-call-ms)))
         result)
       (catch Throwable t
         (log/log logger :error :downstream-call
