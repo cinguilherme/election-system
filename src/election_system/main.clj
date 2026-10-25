@@ -2,6 +2,7 @@
   "Main entrypoint for containerized Election System nodes (`ROLE=api` or `ROLE=actors`)."
   (:gen-class)
   (:require [clojure.string :as str]
+            [election-system.log :as log]
             [election-system.system :as system]))
 
 (defn- env-str
@@ -165,7 +166,16 @@
 (defn -main
   [& _args]
   (let [cfg (build-config-from-env)
-        role (:role cfg)]
+        role (:role cfg)
+        logger (log/make-logger {:service (str "election-" (name role))
+                                 :instance-id (or (:instance-id cfg) (subs (str (random-uuid)) 0 8))
+                                 :level (keyword (or (System/getenv "LOG_LEVEL") "info"))})
+        cfg (assoc cfg :logger logger)]
+    (log/log logger :info :node-starting
+             {:role (name role)
+              :proxy (str (:proxy-host cfg) ":" (:proxy-grpc-port cfg))
+              :db-engine (name (get-in cfg [:db-opts :engine]))
+              :total-partitions (:total-partitions cfg)})
     (println (str "[election-system] Starting node with role=" (name role)
                   " proxy=" (:proxy-host cfg) ":" (:proxy-grpc-port cfg)
                   " db-engine=" (name (get-in cfg [:db-opts :engine]))
@@ -181,9 +191,9 @@
        (Runtime/getRuntime)
        (Thread. ^Runnable
                 (fn []
-                  (println (str "[election-system] Stopping node role=" (name role)))
+                  (log/log logger :info :node-stopping {:role (name role)})
                   (if (= :actors role)
                     (system/stop-actors-node! node)
                     (system/stop-api-node! node)))))
-      (println (str "[election-system] Node role=" (name role) " started and ready."))
+      (log/log logger :info :node-ready {:role (name role)})
       @(promise))))

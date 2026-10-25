@@ -109,6 +109,37 @@ High-cardinality values are **filtered in queries**, not indexed as labels:
   proxy could serve log reads later. Documented here so it is a decision, not an accident.
 - No authentication. Loopback only; never expose Loki/Alloy beyond 127.0.0.1.
 
+## Status
+
+**L1 — built and verified.** Loki 3.4.2 (pinned: 3.5.0 rejected Alloy's pushes with
+`negative structured metadata bytes received`), single binary with the config baked into
+`election-system-loki`; Alloy 1.9.2 (`election-system-alloy`) reads container stdout/stderr
+via the read-only Docker socket and pushes to Loki; Grafana has the `Loki` datasource. 11
+Prometheus targets unaffected.
+
+Verified:
+
+```
+GET /loki/api/v1/labels
+  → compose_project, compose_service, container, stream
+{compose_service="election-api"}            → nginx access lines (rt/urt/upstream)
+{compose_service="election-api-backend"}    → JSON request lines
+  {"service":"election-api","traceId":"cafe12345678","event":":http-request",
+   "status":200,"durationMs":621,"uri":"/v1/elections/national-2026/audit", …}
+```
+
+A client-supplied `x-correlation-id: t=cafe12345678;…` appears as `traceId` in Loki — the
+id survives HTTP → handler → log. Under the soak the same stream shows the real failure:
+`status:503` and a `http-request-failed` with `durationMs:10001, error:"timeout"`, next to
+the nginx line with `urt=10.002`. That is the "why" this was built for.
+
+**L0 — built (first slice).** `election-system.log/make-logger` is a Duct `Logger` that
+writes one JSON line per event with `service`, `instance`, `traceId`/`spanId` and data; the
+node creates one and passes it to ownership and the API. `wrap-request-log` (in
+`d-core-metrics`) logs every request with status, duration and correlation id — 5xx at
+`:error`, 4xx at `:warn`. Remaining L0 events: breaker transitions, vote rejections,
+chaos step verdicts.
+
 ## Phases
 
 ### L0 — use the Duct logger (the ecosystem's), not a new one

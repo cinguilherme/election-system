@@ -95,6 +95,53 @@ services:
     depends_on:
       - prometheus
 
+  # Log aggregation: Alloy reads container stdout/stderr through the Docker API and
+  # pushes to Loki; Grafana queries Loki (datasource provisioned). Loopback only.
+  loki:
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-loki:${TAG:-latest}
+    build:
+      context: ..
+      dockerfile: election-system/observability/loki/Dockerfile
+      provenance: false
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/config.yml"]
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - loki-data:/loki
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+
+  alloy:
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-alloy:${TAG:-latest}
+    build:
+      context: ..
+      dockerfile: election-system/observability/alloy/Dockerfile
+      provenance: false
+    restart: unless-stopped
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+    volumes:
+      # Read-only: discovery + log reads only. See docs/observability-logs.md for why this
+      # is a lab trade-off (the chaos plane uses a narrow socket proxy instead).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    depends_on:
+      - loki
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+
 volumes:
   grafana-data:
   prometheus-data:
+  loki-data:
+  alloy-data:

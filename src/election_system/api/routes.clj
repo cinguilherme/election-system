@@ -346,7 +346,12 @@
         ;; One correlation id for the request and every hop it causes: the gRPC client
         ;; interceptor propagates the bound context as x-correlation-id, the actors'
         ;; server interceptor creates a child span under the same trace id.
-        correlated-handler (otel/wrap-correlation-id traced-handler)]
+        ;; Logged first, then correlated around it: the request log must run while the
+        ;; correlation binding is still active, or its line has no trace id.
+        logged-handler (if (:logger ctx)
+                         (otel/wrap-request-log traced-handler (:logger ctx) {:service "election-api"})
+                         traced-handler)
+        correlated-handler (otel/wrap-correlation-id logged-handler)]
     (if eff-metrics
       (wrappers/wrap-http-metrics correlated-handler eff-metrics {:service "election-api"
                                                                  :normalize-uri-fn normalize-election-uri})

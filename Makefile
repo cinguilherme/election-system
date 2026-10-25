@@ -406,10 +406,11 @@ registry:
 # The four config services are also images now: a worker machine needs nothing
 # but the compose files and the registry -- no observability/ tree on disk.
 BUILT  = async-proxy election-actors election-api async-proxy-gateway \
-         prometheus grafana k6
+         prometheus grafana k6 loki alloy
 IMAGES = election-system-async-proxy election-system election-system-api-lb \
          election-system-proxy-gateway election-system-prometheus \
-         election-system-grafana election-system-k6
+         election-system-grafana election-system-k6 \
+         election-system-loki election-system-alloy
 
 images:
 	$(MAKE) PLATFORM=$(WORKER_PLATFORM) ensure-base

@@ -1,0 +1,48 @@
+// Collect container stdout/stderr and ship it to Loki.
+//
+// Labels are low-cardinality on purpose: compose project/service, container, stream.
+// Trace/request ids are NOT labels -- they are filtered in queries, or the index blows up.
+//
+// The socket is mounted read-only: log collection needs the Docker API. This is a lab
+// trade-off, documented in docs/observability-logs.md.
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+  refresh_interval = "10s"
+}
+
+discovery.relabel "logs" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "compose_project"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "compose_service"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_log_stream"]
+    target_label  = "stream"
+  }
+}
+
+loki.source.docker "containers" {
+  host           = "unix:///var/run/docker.sock"
+  targets        = discovery.docker.containers.targets
+  relabel_rules  = discovery.relabel.logs.rules
+  forward_to     = [loki.write.local.receiver]
+  refresh_interval = "10s"
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

@@ -40,6 +40,7 @@
             [election-system.db.writer :as writer]
             [election-system.membership :as membership]
             [election-system.ownership :as own]
+            [election-system.log :as log]
             [election-system.resilience.admin :as res-admin]
             [election-system.resilience.chaos :as res-chaos]
             [election-system.resilience.health :as res-health]
@@ -166,7 +167,7 @@
    instrumented and an internal admin listener is opened (`:admin-port`, default 8082).
    With chaos disabled nothing is wrapped and no extra listener exists."
   [{:keys [http-port proxy-host proxy-grpc-port worker-count total-partitions db-opts timeout-ms max-threads
-           chaos]
+           logger chaos]
     :or {http-port 8080
          proxy-host "localhost"
          proxy-grpc-port 50051
@@ -250,6 +251,7 @@
                       (actor-core/create-client ingress-transport {:partitions tot-partitions
                                                                    :timeout-ms timeout-ms}))
         handler (routes/make-handler {:actor-client actor-client
+                                      :logger logger
                                       :db db
                                       :db-breaker db-breaker
                                       :transport-breaker transport-breaker
@@ -408,7 +410,7 @@
   [{:keys [metrics-port proxy-host proxy-grpc-port worker-count batch-size flush-every-n
            tick-interval-ms tick-min-batch tick-max-age-ms election-id opens-at closes-at db-opts
            assigned-partitions total-partitions ownership drain-timeout-ms snapshot-every-n
-           tell-interval-ms chaos]
+           tell-interval-ms logger chaos]
     :or {metrics-port 8081
          proxy-host "localhost"
          proxy-grpc-port 50051
@@ -530,7 +532,9 @@
             drained?))
 
         ownership-log (fn [level event data]
-                        (println (str "[ownership] " (name level) " " event " " (pr-str data))))
+                        (if logger
+                          (log/log logger level event data)
+                          (println (str "[ownership] " (name level) " " event " " (pr-str data)))))
 
         ;; Two numbers that must agree for the system to be whole: how many
         ;; partitions exist, and how many leases the cluster currently holds.
