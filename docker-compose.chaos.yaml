@@ -139,5 +139,35 @@ services:
     expose:
       - "8082"
 
+  # The control room. The only browser-facing service of the chaos plane, and the only
+  # component that holds CHAOS_TOKEN: the browser gets a session cookie, never the token.
+  # Published on loopback only -- same posture as the rest of this overlay.
+  chaos-cockpit:
+    image: ${REGISTRY:?set REGISTRY in .env -- the LAN address of the registry host, e.g. 192.168.15.29:5001}/election-system-chaos-cockpit:${TAG:-latest}
+    build:
+      context: ../d-core-chaos-cockpit
+      dockerfile: Dockerfile
+      provenance: false
+    ports:
+      - "127.0.0.1:8090:8090"
+    environment:
+      CHAOS_ENGINE_URL: "http://chaos-engine:8088"
+      CHAOS_TOKEN: "${CHAOS_TOKEN:?set CHAOS_TOKEN (any random string) before using the chaos overlay}"
+      COCKPIT_OPERATORS: "${COCKPIT_OPERATORS:-}"
+      COCKPIT_SESSION_SECRET: "${COCKPIT_SESSION_SECRET:?set COCKPIT_SESSION_SECRET (>= 16 chars)}"
+      COCKPIT_DB: "/data/cockpit.db"
+      COCKPIT_TTL_DEFAULT_MS: "${COCKPIT_TTL_DEFAULT_MS:-300000}"
+      COCKPIT_TTL_MAX_MS: "${COCKPIT_TTL_MAX_MS:-1800000}"
+    volumes:
+      - cockpit-data:/data
+    depends_on:
+      - chaos-engine
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8090/api/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   chaos-reports:
+  cockpit-data:
