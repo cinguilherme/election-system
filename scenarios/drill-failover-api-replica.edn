@@ -1,0 +1,70 @@
+;; D1 — fail over one API replica behind the load balancer.
+;;
+;; The canary probes the public entry (nginx) at 10 rps for the whole drill, so the
+;; claims describe what a user would have seen: how long the gap was, how many requests
+;; failed while nginx noticed, and whether the restarted replica came back into rotation.
+;;
+;; Parameters:
+;;   :replica — which API replica to kill (default 2)
+{:name "drill-failover-api-replica"
+ :description "Kill one API replica behind the balancer; prove RTO, error budget and failback"
+ :params {:replica {:type :int :default 2 :min 1 :max 3}}
+ :settle-ms 3000
+ :timeout-ms 120000
+
+ :steady-state
+ [{:id :audit-before
+   :type :http
+   :url "http://election-api/v1/elections/national-2026/audit"
+   :assert [{:path [:consistent?] :op :eq :value true}]}]
+
+ :steps
+ [{:action :probe
+   :after-ms 0
+   :note "canary through the balancer: what a user sees"
+   :url "http://election-api/v1/elections/national-2026/audit"
+   :rate-rps 10
+   :duration-ms 45000}
+
+  {:action :kill-container
+   :after-ms 5000
+   :note "the act"
+   :service "election-api-backend"
+   :replica "${replica}"}
+
+  {:action :restart-container
+   :after-ms 30000
+   :note "failback: the replica returns"
+   :service "election-api-backend"
+   :replica "${replica}"}]
+
+ ;; The contract. RTO is measured from the kill; the failback claim from the restart.
+ :claims
+ [{:id :rto
+   :type :rto
+   :max-ms 15000
+   :quiet-ms 5000
+   :min-successes 3}
+
+  {:id :error-budget
+   :type :error-budget
+   :max-rate 0.005}
+
+  {:id :failback
+   :type :rto
+   :act :last
+   :max-ms 30000
+   :quiet-ms 5000
+   :min-successes 3}]
+
+ :invariants
+ [{:id :audit-after
+   :type :http
+   :url "http://election-api/v1/elections/national-2026/audit"
+   :assert [{:path [:consistent?] :op :eq :value true}
+            {:path [:db-audit :ballot-tallies] :op :sum-eq
+             :value-path [:db-audit :ballot-count]}]}
+
+  {:id :no-faults-left
+   :type :faults
+   :assert [{:path [:count] :op :eq :value 0}]}]}

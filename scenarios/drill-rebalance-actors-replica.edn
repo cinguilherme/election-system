@@ -1,0 +1,83 @@
+;; D2 — rebalance after one actors replica dies.
+;;
+;; The probe writes through the balancer at 5 rps (the write path is what exercises
+;; partition ownership), and a watch follows the survivor's owned-partition count so the
+;; drill can measure how long the rebalance took.
+;;
+;; Parameters:
+;;   :replica              — which actors replica to kill (default 2)
+;;   :survivor             — a replica that must stay up, watched for the rebalance (default 1)
+;;   :expected-owned       — partitions the survivor should own after the rebalance
+;;                            (default 16 = ceil(TOTAL_PARTITIONS 32 / survivors 2))
+;;
+;; The error budget is 5% rather than 0.5%: the probe reuses one voter id, and the API may
+;; reject a duplicate vote while the cluster is rebalancing. That is a property of the probe,
+;; not of the system; the data invariant below is strict.
+{:name "drill-rebalance-actors-replica"
+ :description "Kill one actors replica; prove partitions rebalance, writes continue and data stays exact"
+ :params {:replica {:type :int :default 2 :min 1 :max 3}
+          :survivor {:type :int :default 1 :min 1 :max 3}
+          :expected-owned {:type :int :default 16 :min 1}}
+ :settle-ms 5000
+ :timeout-ms 120000
+
+ :steady-state
+ [{:id :audit-before
+   :type :http
+   :url "http://election-api/v1/elections/national-2026/audit"
+   :assert [{:path [:consistent?] :op :eq :value true}]}]
+
+ :steps
+ [{:action :probe
+   :after-ms 0
+   :note "writes through the balancer"
+   :url "http://election-api/v1/elections/national-2026/votes"
+   :method :post
+   :body {:precinct_id "p-1"
+          :voter_id "drill-voter"
+          :candidate_id "alice"}
+   :rate-rps 5
+   :duration-ms 45000}
+
+  {:action :watch
+   :after-ms 0
+   :note "the survivor's share of the partition space"
+   :target {:service "election-actors" :replica "${survivor}"}
+   :path "/health"
+   :extract {:json "components.owning-partitions.details.owned"}
+   :interval-ms 1000
+   :duration-ms 45000}
+
+  {:action :kill-container
+   :after-ms 5000
+   :note "the act"
+   :service "election-actors"
+   :replica "${replica}"}
+
+  {:action :restart-container
+   :after-ms 30000
+   :note "failback"
+   :service "election-actors"
+   :replica "${replica}"}]
+
+ :claims
+ [{:id :rebalance
+   :type :converged
+   :act :first
+   :pred {:op :gte :value "${expected-owned}"}}
+
+  {:id :error-budget
+   :type :error-budget
+   :max-rate 0.05}]
+
+ :invariants
+ [{:id :audit-after
+   :type :http
+   :url "http://election-api/v1/elections/national-2026/audit"
+   :assert [{:path [:consistent?] :op :eq :value true}
+            {:path [:db-audit :ballot-tallies] :op :sum-eq
+             :value-path [:db-audit :ballot-count]}]}
+
+  {:id :no-faults-left
+   :type :faults
+   :assert [{:path [:count] :op :eq :value 0}]}]}
