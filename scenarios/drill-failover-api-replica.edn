@@ -15,14 +15,14 @@
  :steady-state
  [{:id :audit-before
    :type :http
-   :url "http://election-api/v1/elections/national-2026/audit"
+   :url "http://election-api:8080/v1/elections/national-2026/audit"
    :assert [{:path [:consistent?] :op :eq :value true}]}]
 
  :steps
  [{:action :probe
    :after-ms 0
    :note "canary through the balancer: what a user sees"
-   :url "http://election-api/v1/elections/national-2026/audit"
+   :url "http://election-api:8080/v1/elections/national-2026/audit"
    :rate-rps 10
    :duration-ms 45000}
 
@@ -60,7 +60,7 @@
  :invariants
  [{:id :audit-after
    :type :http
-   :url "http://election-api/v1/elections/national-2026/audit"
+   :url "http://election-api:8080/v1/elections/national-2026/audit"
    :assert [{:path [:consistent?] :op :eq :value true}
             {:path [:db-audit :ballot-tallies] :op :sum-eq
              :value-path [:db-audit :ballot-count]}]}

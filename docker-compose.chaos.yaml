@@ -49,11 +49,10 @@ services:
     ports:
       # Management API: useful for poking at proxies by hand.
       - "8474:8474"
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8474/version"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
+    # No healthcheck: the toxiproxy image is distroless (no shell, no wget), so any
+    # probe would fail with "executable file not found" and block `up` on service_healthy.
+    # The proxies are created from the mounted config at startup; readiness is visible in
+    # the logs and through the engine's /api/targets.
 
   # The only component with access to the docker socket. It is a narrow TCP view of
   # the API (containers + POST), so the engine can pause/kill without mounting the
