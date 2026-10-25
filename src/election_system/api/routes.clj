@@ -15,7 +15,31 @@
             [d-core.libs.time :as time]
             [election-system.db.writer :as writer]
             [election-system.domain.election :as domain]
+            [election-system.log :as log]
             [reitit.ring :as ring]))
+
+(defn- call-logged
+  "One line per downstream call: which dependency, how long, how it ended.
+
+   With the request's cid on the line, a timeout says WHICH call hung. The response is
+   gone in a timeout, but the cid was minted on the request, so the downstream story is
+   still queryable by prefix."
+  [logger label f]
+  (let [started (System/currentTimeMillis)]
+    (try
+      (let [result (f)]
+        (log/log logger :info :downstream-call
+                 {:call label
+                  :durationMs (- (System/currentTimeMillis) started)
+                  :outcome :ok})
+        result)
+      (catch Throwable t
+        (log/log logger :error :downstream-call
+                 {:call label
+                  :durationMs (- (System/currentTimeMillis) started)
+                  :outcome :error
+                  :error (or (ex-message t) (str (class t)))})
+        (throw t)))))
 
 (defn- protect-with-breaker
   [breaker f]
@@ -93,7 +117,7 @@
                            [election-id (or candidate-id "unknown") mode status])))
 
 (defn- handle-cast-vote
-  [{:keys [actor-client transport-breaker metrics votes-counter timeout-ms]}]
+  [{:keys [actor-client transport-breaker metrics votes-counter timeout-ms logger]}]
   (fn [req]
     (let [election-id (get-in req [:path-params :election-id])
           body (parse-body req)
@@ -128,12 +152,14 @@
                                 :election-id election-id
                                 :precinct-id precinct-id}
                                202))
-              (let [reply (protect-with-breaker transport-breaker
-                                                #(actor/ask-sync! actor-client
-                                                                  :precinct
-                                                                  actor-id
-                                                                  msg
-                                                                  {:timeout-ms (or timeout-ms 5000)}))
+              (let [reply (call-logged logger :cast-vote
+                                       (fn []
+                                         (protect-with-breaker transport-breaker
+                                                               #(actor/ask-sync! actor-client
+                                                                                 :precinct
+                                                                                 actor-id
+                                                                                 msg
+                                                                                 {:timeout-ms (or timeout-ms 5000)}))))
                     vote-status (or (:status reply) :error)]
                 (record-vote-metric! metrics votes-counter election-id candidate-id :sync vote-status)
                 (json-response reply (status-code-for-vote-reply reply))))
@@ -247,19 +273,23 @@
                        200)))))
 
 (defn- handle-election-audit
-  [{:keys [actor-client db transport-breaker db-breaker metrics-atom timeout-ms]}]
+  [{:keys [actor-client db transport-breaker db-breaker metrics-atom timeout-ms logger]}]
   (fn [req]
     (try
       (let [election-id (get-in req [:path-params :election-id])
-            live-tally (protect-with-breaker transport-breaker
-                                             #(actor/ask-sync! actor-client
-                                                               :election-tally
-                                                               election-id
-                                                               {:type :get-tally}
-                                                               {:timeout-ms (or timeout-ms 5000)}))
+            live-tally (call-logged logger :election-tally
+                                    (fn []
+                                      (protect-with-breaker transport-breaker
+                                                            #(actor/ask-sync! actor-client
+                                                                              :election-tally
+                                                                              election-id
+                                                                              {:type :get-tally}
+                                                                              {:timeout-ms (or timeout-ms 5000)}))))
             db-audit (when db
-                       (protect-with-breaker db-breaker
-                                             #(writer/query-db-audit db election-id)))
+                       (call-logged logger :db-audit
+                                    (fn []
+                                      (protect-with-breaker db-breaker
+                                                            #(writer/query-db-audit db election-id)))))
             write-metrics (when metrics-atom @metrics-atom)]
         (json-response {:election-id election-id
                         :live-actor-tally live-tally

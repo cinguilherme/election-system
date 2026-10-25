@@ -76,6 +76,23 @@ requests.
 Do not put user identifiers in the prefix — logs are centralized and retained. Use the app
 and the use case, or a pseudonymous id.
 
+### The motivating case: a timeout
+
+The response is gone, but the CID was minted on the **request**, so every log line of that
+request is still queryable. The API now logs one `:downstream-call` line per dependency
+(`call`, `durationMs`, `outcome`, `error`) on the same cid:
+
+```
+APPX.SIGNIN.REQ.1g8qn6qt6gro.c3vzgoez  :downstream-call  election-tally  351ms  ok
+APPX.SIGNIN.REQ.1g8qn6qt6gro.c3vzgoez  :downstream-call  db-audit        247ms  ok
+APPX.SIGNIN.REQ.1g8qn6qt6gro.c3vzgoez  :http-request     598ms            200
+```
+
+Under a timeout the same line reads `outcome: error, durationMs: 10001`, which names the
+dependency that hung instead of "the request timed out". A hop that never logs is also a
+signal — once the downstream services log their inbound calls, absence tells you where the
+request stopped.
+
 One known gap: a handler that **throws** (e.g. the 10 s actor timeout) produces Jetty's 500
 page without the header, because the middleware can only add it to a returned response. The
 CID is still in the error log line, which is what a support engineer needs; returning a
