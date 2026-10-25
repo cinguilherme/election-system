@@ -204,22 +204,25 @@
         db-breaker (res-chaos/instrument-breaker
                     chaos-rt
                     (resilience/make-guard
-                     {:name "election-db"
-                      :timeout-ms (or timeout-ms 10000)
-                      :breaker {:failure-threshold 5 :reset-timeout-ms 5000
-                                :reset-jitter-ratio 0.2}
-                      :signal (shared-signal "election-db")
-                      :metrics prom-metrics})
+                     (cond-> {:name "election-db"
+                              :timeout-ms (or timeout-ms 10000)
+                              :breaker {:failure-threshold 5 :reset-timeout-ms 5000
+                                        :reset-jitter-ratio 0.2}
+                              :metrics prom-metrics}
+                       ;; No VALKEY_URI -> no shared signal; don't pass an explicit nil.
+                       (shared-signal "election-db")
+                       (assoc :signal (shared-signal "election-db"))))
                     :election-db)
         transport-breaker (res-chaos/instrument-breaker
                            chaos-rt
                            (resilience/make-guard
-                            {:name "election-async-proxy"
-                             :timeout-ms (or timeout-ms 10000)
-                             :breaker {:failure-threshold 5 :reset-timeout-ms 5000
-                                       :reset-jitter-ratio 0.2}
-                             :signal (shared-signal "election-async-proxy")
-                             :metrics prom-metrics})
+                            (cond-> {:name "election-async-proxy"
+                                     :timeout-ms (or timeout-ms 10000)
+                                     :breaker {:failure-threshold 5 :reset-timeout-ms 5000
+                                               :reset-jitter-ratio 0.2}
+                                     :metrics prom-metrics}
+                              (shared-signal "election-async-proxy")
+                              (assoc :signal (shared-signal "election-async-proxy"))))
                            :election-async-proxy)
         health-registry (health-reg/make-health-registry
                          {:service-name "election-api"

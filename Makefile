@@ -1,4 +1,4 @@
-.PHONY: tests unit integration benchmark lint clean up up-build up-perf chaos-up chaos-down chaos-status chaos-targets chaos-faults chaos-experiments chaos-kill chaos-scenarios chaos-run chaos-runs chaos-load down logs load-test load-test-docker stress-test stress-test-docker stress-test-single rate-test rate-test-docker profile profile-cpu profile-perf profile-alloc profile-wall profile-lock profile-mem threaddump throttling purge-streams reset-data build-base ensure-base
+.PHONY: tests unit integration benchmark lint clean up up-build up-perf chaos-up chaos-down chaos-status chaos-targets chaos-faults chaos-experiments chaos-kill chaos-scenarios chaos-run chaos-runs chaos-load down logs load-soak load-test load-test-docker stress-test stress-test-docker stress-test-single rate-test rate-test-docker profile profile-cpu profile-perf profile-alloc profile-wall profile-lock profile-mem threaddump throttling purge-streams reset-data build-base ensure-base
 
 # Prebuild shared base image containing diagnostic utilities and async-profiler
 build-base:
@@ -150,6 +150,24 @@ logs:
 	docker compose logs -f
 
 K6_HOST ?= $(shell command -v k6 2>/dev/null)
+SOAK_DURATION ?= 30m
+EXP_ID ?=
+
+# Long, steady load for chaos experiments: 100 constant VUs, no ramps.
+# Usage: make load-soak SOAK_DURATION=45m [EXP_ID=exp-123]
+load-soak:
+	@if [ -n "$(K6_HOST)" ] && [ -z "$(USE_DOCKER)" ]; then \
+		echo "Running 100-VU soak against $${API_URL:-http://127.0.0.1:8080} for $(SOAK_DURATION)..."; \
+		API_URL=$${API_URL:-http://127.0.0.1:8080} DURATION=$(SOAK_DURATION) EXP_ID=$(EXP_ID) \
+			$(K6_HOST) run observability/k6/chaos_soak.js; \
+	else \
+		$(MAKE) load-soak-docker; \
+	fi
+
+load-soak-docker:
+	docker compose -f docker-compose.yaml -f docker-compose.observability.yaml -f docker-compose.load.yaml \
+		--profile load run --rm -e API_URL=http://election-api -e DURATION=$(SOAK_DURATION) -e EXP_ID=$(EXP_ID) k6 \
+		run /scripts/chaos_soak.js
 
 # Default progressive 5-stage stress staircase (50 -> 150 -> 300 -> 500 VUs over 2m45s)
 load-test:
