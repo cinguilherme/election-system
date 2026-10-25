@@ -71,6 +71,7 @@ services:
       context: ..
       dockerfile: d-core-chaos-engine/Dockerfile
       provenance: false
+    restart: unless-stopped
     ports:
       # Operator-facing API. Token-guarded; this is the surface you curl.
       - "8088:8088"
@@ -100,7 +101,9 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 256M
+          # 256M was not enough: the JVM was OOM-killed (exit 137) right after a drill
+          # finished, which silently took the engine down mid-experiment.
+          memory: 512M
 
   election-actors:
     environment:
@@ -157,6 +160,7 @@ services:
       COCKPIT_DB: "/data/cockpit.db"
       COCKPIT_TTL_DEFAULT_MS: "${COCKPIT_TTL_DEFAULT_MS:-300000}"
       COCKPIT_TTL_MAX_MS: "${COCKPIT_TTL_MAX_MS:-1800000}"
+    restart: unless-stopped
     volumes:
       - cockpit-data:/data
     depends_on:

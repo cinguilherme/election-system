@@ -29,11 +29,18 @@
         default-val))
     default-val))
 
+(defn- parse-bool
+  "`Boolean/parseBoolean` only accepts \"true\", so the compose files' `CHAOS_ENABLED=1`
+   silently disabled the whole chaos runtime (no admin listener, no journal, no
+   instrumentation). Accept the forms people actually write."
+  [v default-val]
+  (if (some? v)
+    (contains? #{"1" "true" "yes" "on" "y" "t"} (str/lower-case (str/trim v)))
+    default-val))
+
 (defn- env-bool
   [k default-val]
-  (if-let [v (env-str k nil)]
-    (Boolean/parseBoolean v)
-    default-val))
+  (parse-bool (env-str k nil) default-val))
 
 (defn- env-list
   [k]
