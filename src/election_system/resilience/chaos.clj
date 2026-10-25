@@ -44,7 +44,7 @@
      :audit-max-entries  - audit ring size"
   [{:keys [enabled? journal-mode max-events instance-id rules
            allowed-components max-total-hits audit-max-entries
-           sample max-payload-chars trace-fn]
+           sample max-payload-chars trace-fn on-hit]
     :or {enabled? false
          journal-mode :full
          max-events default-max-events}}]
@@ -60,7 +60,8 @@
                     (cond-> {:rules (vec (or rules []))}
                       allowed-components (assoc :allowed-components allowed-components)
                       max-total-hits (assoc :max-total-hits max-total-hits)
-                      audit-max-entries (assoc :audit-max-entries audit-max-entries)))
+                      audit-max-entries (assoc :audit-max-entries audit-max-entries)
+                      on-hit (assoc :on-hit on-hit)))
        :journal (when (#{:full :meta} mode)
                   (journal/make-journal
                    (cond-> {:mode mode

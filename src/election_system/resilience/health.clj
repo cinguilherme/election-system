@@ -9,7 +9,8 @@
 
    Probes deliberately use the **raw** (un-instrumented) components: a health
    check must observe the dependency, not add chaos events to the journal."
-  (:require [d-core.core.databases.protocols.simple-sql :as sql]
+  (:require [d-core.chaos.controller :as chaos]
+            [d-core.core.databases.protocols.simple-sql :as sql]
             [d-core.core.leader-election.protocol :as lease-p]
             [d-core.health.registry :as health-reg])
   (:import (java.net InetSocketAddress Socket)))
@@ -77,12 +78,13 @@
      :broker           - {:host string :port long} of the async-proxy gRPC endpoint
      :lease            - raw lease component (nil when ownership is disabled)
      :owned-fn         - (fn [] {:owned n :total m})
+     :chaos-controller - optional ChaosController; exposes rules/hits as a component
      :check-timeout-ms - per-check timeout
      :ttl-ms           - evaluation cache TTL (default 1000)
      :failures-before-down - consecutive failures before a check reports :down (default 2)
      :lifecycle        - :starting while the node claims partitions, :running after"
-  [{:keys [service-name metrics logger db broker lease owned-fn check-timeout-ms
-           ttl-ms failures-before-down lifecycle]
+  [{:keys [service-name metrics logger db broker lease owned-fn chaos-controller
+           check-timeout-ms ttl-ms failures-before-down lifecycle]
     :or {service-name "election-actors"
          check-timeout-ms default-check-timeout-ms
          ttl-ms 1000
@@ -112,7 +114,16 @@
                                  {:check-fn (partitions-check owned-fn)
                                   :critical? false
                                   :timeout-ms check-timeout-ms
-                                  :tags #{:readiness}}))]
+                                  :tags #{:readiness}})
+                 chaos-controller
+                 (assoc :chaos
+                        {:check-fn (fn [_]
+                                     {:status :up
+                                      :details {:enabled? true
+                                                :rules (count (chaos/rules chaos-controller))
+                                                :hits (chaos/total-hits chaos-controller)}})
+                         :critical? false
+                         :tags #{:readiness}}))]
     (health-reg/make-health-registry
      {:service-name service-name
       :metrics metrics

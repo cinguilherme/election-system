@@ -185,9 +185,22 @@ The lines carry the cid, so a slow request leads to its chain with one more filt
   :http-request               4162ms 200 slow=true  cid=…lnzihzac
 ```
 
-Chaos injections are visible in the same place: the engine logs `fault-armed` and
-`fault-cleared` with the fault id, selector and target count, so "chaos is armed" is a log
-line next to the application's own.
+### Chaos telemetry
+
+Three signals, because "is chaos on?" and "is it firing?" are different questions:
+
+| Signal | Where | Notes |
+| :-- | :-- | :-- |
+| `fault-armed` / `fault-cleared` | engine log | id, selector, target count, status |
+| `:chaos-engaged` | app log, `:warn` | first hit **per rule per process**, with rule/component/fault and the request's cid |
+| `:chaos-engaged-summary` | app log, `:warn` | every 10 s, counts per `component/fault` — a per-hit line would flood (~18k msg/min) |
+| `chaos_hits_total` | Prometheus | labels `component`, `fault` (not the rule id: cardinality) |
+| `chaos` health component | `/health` | `{enabled?, rules, hits}` on every node |
+
+The counter is the thing to alert on; the engaged line is the thing to **read** (it carries
+the cid, so a firing fault leads to the affected request). Announcements are per process:
+with two API replicas you will see the first hit twice, once per node. That is correct —
+"this node saw chaos fire" is a per-node fact.
 
 ## Status
 

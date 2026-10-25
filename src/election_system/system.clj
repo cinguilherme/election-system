@@ -40,6 +40,7 @@
             [election-system.db.writer :as writer]
             [election-system.membership :as membership]
             [election-system.ownership :as own]
+            [election-system.chaos-telemetry :as chaos-telemetry]
             [election-system.log :as log]
             [election-system.resilience.admin :as res-admin]
             [election-system.resilience.chaos :as res-chaos]
@@ -174,14 +175,23 @@
          timeout-ms 10000
          max-threads 120}}]
   (let [chaos-cfg (or chaos {})
+        {:keys [prom-registry prom-metrics]} (init-prometheus true)
+        chaos-counter (when prom-metrics
+                        (metrics/counter prom-metrics
+                                         {:name :chaos_hits_total
+                                          :help "Chaos faults fired, by component and fault type"
+                                          :labels [:component :fault]}))
+        chaos-telemetry (chaos-telemetry/make-telemetry {:logger logger
+                                                         :metrics prom-metrics
+                                                         :counter chaos-counter})
         chaos-rt (res-chaos/make-runtime
                   (assoc chaos-cfg :instance-id (or (:instance-id chaos-cfg)
-                                                    (res-chaos/default-instance-id))))
+                                                    (res-chaos/default-instance-id))
+                         :on-hit chaos-telemetry))
         tot-partitions (long (or total-partitions worker-count 4))
         {:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
         raw-db db
         db (res-chaos/instrument-db chaos-rt raw-db)
-        {:keys [prom-registry prom-metrics]} (init-prometheus true)
         tracer-ctx (otel/init-tracer {:service-name (or (System/getenv "OTEL_SERVICE_NAME") "election-api")})
         ;; Report the name the tracer actually registered. Spans from this process
         ;; were showing up in Jaeger under a different service, and without this
@@ -237,6 +247,15 @@
                                                  :critical? true
                                                  :failures-before-down 2
                                                  :tags #{:readiness}}
+                                   :chaos {:check-fn (fn [_]
+                                                       {:status :up
+                                                        :details {:enabled? (:enabled? chaos-rt)
+                                                                  :rules (if-let [c (:controller chaos-rt)]
+                                                                           (count (chaos-ctrl/rules c)) 0)
+                                                                  :hits (if-let [c (:controller chaos-rt)]
+                                                                          (chaos-ctrl/total-hits c) 0)}})
+                                           :critical? false
+                                           :tags #{:readiness}}
                                    :liveness {:check-fn (fn [_] {:status :up})
                                               :critical? true
                                               :tags #{:liveness}}}})
@@ -420,16 +439,25 @@
          tick-max-age-ms 10000
          election-id "national-2026"}}]
   (let [chaos-cfg (or chaos {})
+        {:keys [prom-registry prom-metrics]} (init-prometheus true)
+        chaos-counter (when prom-metrics
+                        (metrics/counter prom-metrics
+                                         {:name :chaos_hits_total
+                                          :help "Chaos faults fired, by component and fault type"
+                                          :labels [:component :fault]}))
+        chaos-telemetry (chaos-telemetry/make-telemetry {:logger logger
+                                                         :metrics prom-metrics
+                                                         :counter chaos-counter})
         chaos-rt (res-chaos/make-runtime
                   (assoc chaos-cfg :instance-id (or (:instance-id chaos-cfg)
                                                     (:instance-id ownership)
-                                                    (res-chaos/default-instance-id))))
+                                                    (res-chaos/default-instance-id))
+                         :on-hit chaos-telemetry))
         assigned (vec (or assigned-partitions (range (or worker-count 4))))
         tot-partitions (long (or total-partitions (max (count assigned) (or worker-count 4))))
         {:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
         raw-db db
         db (res-chaos/instrument-db chaos-rt raw-db)
-        {:keys [prom-registry prom-metrics]} (init-prometheus true)
         tracer-ctx (otel/init-tracer {:service-name (or (System/getenv "OTEL_SERVICE_NAME") "election-actors")
                                       :instance-id (:instance-id ownership)})
         ;; Report the name the tracer actually registered. Spans from this process
@@ -628,7 +656,8 @@
                           :db raw-db
                           :broker {:host proxy-host :port proxy-grpc-port}
                           :lease raw-lease
-                          :owned-fn owned-fn})
+                          :owned-fn owned-fn
+                          :chaos-controller (:controller chaos-rt)})
 
         _ (health-reg/set-lifecycle! health-registry :running)
         metrics-handler (make-actors-metrics-handler prom-registry metrics-atom actual-workers-count
@@ -812,6 +841,15 @@
                                                  :critical? true
                                                  :failures-before-down 2
                                                  :tags #{:readiness}}
+                                   :chaos {:check-fn (fn [_]
+                                                       {:status :up
+                                                        :details {:enabled? (some? controller)
+                                                                  :rules (if-let [c controller]
+                                                                           (count (chaos-ctrl/rules c)) 0)
+                                                                  :hits (if-let [c controller]
+                                                                          (chaos-ctrl/total-hits c) 0)}})
+                                           :critical? false
+                                           :tags #{:readiness}}
                                    :liveness {:check-fn (fn [_] {:status :up})
                                               :critical? true
                                               :tags #{:liveness}}}})
