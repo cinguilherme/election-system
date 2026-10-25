@@ -42,6 +42,47 @@ request.
 
 ## Correlation: the id that must survive every hop
 
+### The CID is a path, not a single id
+
+The originator sets the root as `<app>.<use-case>.REQ` — e.g. `APPX.SIGNIN.REQ` names the
+application and the use case, not a user. Services **adopt** it and append; they never
+invent it. Each hop appends its span:
+
+```
+APPX.SIGNIN.REQ                       ← business context (set by the client / entry app)
+APPX.SIGNIN.REQ.3znzifu93mze          ← + request id (the trace id, at ingress)
+APPX.SIGNIN.REQ.3znzifu93mze.ysqgm97g ← + this hop's span
+…                                     ← + every downstream hop
+```
+
+That gives three zoom levels from the same header:
+
+| Prefix query | Returns |
+| :-- | :-- |
+| `APPX.SIGNIN.REQ` | every sign-in request of that app |
+| `APPX.SIGNIN.REQ.<request-id>` | one request, every service |
+| `APPX.SIGNIN.REQ.<request-id>.<hop>` | one hop |
+
+The CID is capped at **256 characters** (`d-core.tracing/max-cid-length`): at the cap a hop
+keeps the parent CIDs instead of growing it, so deep retry chains stay queryable. The
+business prefix is capped at 200, leaving room for the request id and a hop.
+
+It travels inside the existing header as an extra key, so nothing new is threaded through
+gRPC: `t=…;s=…;p=…;c=APPX.SIGNIN.REQ.3znzifu93mze.ysqgm97g`. Logs carry `cid`, `traceId` and
+`otelTraceId` side by side. The CID is a **log-level** device (not sampled, unlike traces):
+it is what makes "this error, then that alternative flow" readable across services and
+requests.
+
+Do not put user identifiers in the prefix — logs are centralized and retained. Use the app
+and the use case, or a pseudonymous id.
+
+One known gap: a handler that **throws** (e.g. the 10 s actor timeout) produces Jetty's 500
+page without the header, because the middleware can only add it to a returned response. The
+CID is still in the error log line, which is what a support engineer needs; returning a
+500 body with the CID is a follow-up.
+
+### How it is carried
+
 The ecosystem already has the pieces:
 
 - `d-core.tracing` — `*ctx*` = `{trace-id span-id parent-span-id}`, encoded as

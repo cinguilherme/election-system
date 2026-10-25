@@ -20,6 +20,7 @@
   []
   (when-let [ctx tracing/*ctx*]
     (cond-> {:traceId (:trace-id ctx) :spanId (:span-id ctx)}
+      (:cid ctx) (assoc :cid (:cid ctx))
       (:parent-span-id ctx) (assoc :parentSpanId (:parent-span-id ctx)))))
 
 (defn- safe-json
