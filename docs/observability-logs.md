@@ -40,6 +40,41 @@ access logs**. The aggregator becomes genuinely useful only when the application
 events — especially with a trace id, so a log line and a trace are two views of the same
 request.
 
+## Correlation: the id that must survive every hop
+
+The ecosystem already has the pieces:
+
+- `d-core.tracing` — `*ctx*` = `{trace-id span-id parent-span-id}`, encoded as
+  `t=<trace-id>;s=<span-id>;p=<parent-span-id>` in `x-correlation-id`.
+- gRPC **client** interceptor — propagates `d-core.tracing/*ctx*` as `x-correlation-id`.
+- gRPC **server** interceptor — decodes it, creates a child span, binds it in the call
+  context and echoes it in response headers.
+- `d-core-grpc` tests already prove service A and B share one trace id across gRPC.
+
+**The gap found:** the HTTP layer never bound `d-core.tracing/*ctx*`. `wrap-http-tracing`
+binds only the OpenTelemetry context, so on an HTTP request the client interceptor saw
+`nil` and called `ensure-ctx`, starting a **new trace per actor call** — the request, its
+traces and its downstream calls had no shared id. This is exactly the "losing correlation
+between services" risk.
+
+**Fix (implemented):** `wrap-correlation-id` in `d-core-metrics` (next to the HTTP tracing
+wrapper) decodes an inbound `x-correlation-id` or creates one, makes this hop a child span,
+binds `d-core.tracing/*ctx*` for the whole handler and echoes the id in the response. Wired
+around the API handler in `routes.clj`.
+
+Verified live:
+
+```
+$ curl -H 'x-correlation-id: t=abc123456789;s=11112222;p=-' .../audit -D -
+x-correlation-id: t=abc123456789;s=ioid56om;p=11112222
+```
+
+Same trace id, a new span per hop, the parent span preserved; six requests, six child
+spans, all 200. The actor hop is covered by the existing gRPC propagation test (A and B
+share the trace id). Remaining for L0: bind the decoded context for **actor-side** work so
+actor logs carry it too (the server interceptor attaches it to the gRPC context; the
+handler must bind it or read it explicitly).
+
 ## Architecture
 
 ```
@@ -76,7 +111,29 @@ High-cardinality values are **filtered in queries**, not indexed as labels:
 
 ## Phases
 
-### L0 — make the applications say something (prerequisite, small)
+### L0 — use the Duct logger (the ecosystem's), not a new one
+
+`org.duct-framework/logger` and `module.logging` are already dependencies, and two call
+sites already speak the protocol (`ownership.clj`, `db/writer.clj` accept "a duct logger or
+a plain fn"). What is missing is a **logger component**: today the node passes a plain fn
+(`ownership-log`) because no logger is instantiated, and the `Logger` protocol is never
+used end-to-end.
+
+Plan: construct exactly one logger in the node bootstrap (`duct.logger.simple/logger`, or a
+small `Logger` implementation that prints one JSON line per event and adds the current
+correlation id), then pass it to ownership, the DB writer, the API handlers, resilience and
+chaos. No second logging abstraction.
+
+The logger reads `d-core.tracing/*ctx*` (see "Correlation" below) so every line carries the
+same trace id as the request and its traces. Events to add:
+
+- HTTP 5xx with `reason`/`exception` (including `:circuit-breaker/open`);
+- breaker transitions open/closed, with the failing dependency;
+- vote rejected (`409 duplicate-vote`) and actor transport failures;
+- chaos engine: run started, step executed (action, target/container, ok/error), claim
+  verdicts, gate waits — enough to reconstruct a drill timeline from logs alone.
+
+### L0 (second half) — make the applications say something
 The aggregator is only as useful as the events we emit. A dependency-free JSON-lines
 logger (`d-core-std.log` or a tiny namespace per app): `ts`, `level`, `service`,
 `instance`, `trace_id`, `span_id`, `event`, `fields`. Replace the 8 `println`s and add the

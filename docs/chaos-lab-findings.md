@@ -145,3 +145,14 @@ run a stale baked config forever.
 
 Under the still-running 100-VU soak the dashboards now show ~11 5xx/s from the API
 (`http_requests_total{status=~"5.."}`) — the breaker finding F8, visible rather than hidden.
+
+## F10 — nginx resolves backends once; recreating them needs an LB restart (lab, operational)
+
+After recreating the API containers, `/audit` through the balancer returned intermittent
+Jetty 500s while both backends answered 200 when hit directly: nginx had resolved
+`election-api-backend` at startup and kept the old IPs in its upstream, some of which now
+belonged to other containers. `docker compose restart election-api` fixed it (6/6 200).
+
+Operational rule for the lab: after recreating API replicas, restart the balancer — or give
+the upstream a `resolver` and resolve per request. This also affects drills that restart
+replicas, and is worth remembering when the 500s appear in a Grafana panel.
