@@ -184,10 +184,16 @@
         chaos-telemetry (chaos-telemetry/make-telemetry {:logger logger
                                                          :metrics prom-metrics
                                                          :counter chaos-counter})
+        chaos-gauge (when prom-metrics
+                      (metrics/gauge prom-metrics
+                                     {:name :chaos_enabled
+                                      :help "1 when the chaos runtime is enabled on this node"}))
         chaos-rt (res-chaos/make-runtime
                   (assoc chaos-cfg :instance-id (or (:instance-id chaos-cfg)
                                                     (res-chaos/default-instance-id))
                          :on-hit chaos-telemetry))
+        _ (when chaos-gauge
+            (metrics/set! prom-metrics chaos-gauge (if (:enabled? chaos-rt) 1 0)))
         tot-partitions (long (or total-partitions worker-count 4))
         {:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))
         raw-db db
@@ -448,11 +454,17 @@
         chaos-telemetry (chaos-telemetry/make-telemetry {:logger logger
                                                          :metrics prom-metrics
                                                          :counter chaos-counter})
+        chaos-gauge (when prom-metrics
+                      (metrics/gauge prom-metrics
+                                     {:name :chaos_enabled
+                                      :help "1 when the chaos runtime is enabled on this node"}))
         chaos-rt (res-chaos/make-runtime
                   (assoc chaos-cfg :instance-id (or (:instance-id chaos-cfg)
                                                     (:instance-id ownership)
                                                     (res-chaos/default-instance-id))
                          :on-hit chaos-telemetry))
+        _ (when chaos-gauge
+            (metrics/set! prom-metrics chaos-gauge (if (:enabled? chaos-rt) 1 0)))
         assigned (vec (or assigned-partitions (range (or worker-count 4))))
         tot-partitions (long (or total-partitions (max (count assigned) (or worker-count 4))))
         {:keys [db pg-client tmp-file]} (connect-sql-database (or db-opts {:engine :sqlite}))

@@ -1,0 +1,122 @@
+{
+  "uid": "chaos",
+  "title": "Chaos",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "component",
+        "label": "Component",
+        "type": "custom",
+        "query": "db,actor-transport,actor-client,actor-delivery,actor-effect,snapshot,lease,circuit-breaker",
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Chaos hits (range)",
+      "description": "Fault firings in the selected range, from chaos_hits_total.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [
+        { "refId": "A", "expr": "sum(increase(chaos_hits_total[$__range]))" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Nodes with chaos enabled",
+      "description": "chaos_enabled is 1 on a node whose chaos runtime is on.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [
+        { "refId": "A", "expr": "sum(chaos_enabled)" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "API 5xx rate",
+      "description": "What the users see while chaos is armed.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m]))" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Slow requests (range)",
+      "description": "Requests that crossed the slow threshold, counted from the JSON logs (slow=true).",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [
+        { "refId": "A", "expr": "sum(count_over_time({compose_project=\"election-system\"} | json | slow=\"true\" [$__range]))" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Chaos hits by component / fault",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum by (component, fault) (rate(chaos_hits_total{component=~\"$component\"}[$__rate_interval]))" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "API 5xx rate",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(http_requests_total{status=~\"5..\"}[$__rate_interval]))" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Slow requests per minute (from logs)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(count_over_time({compose_project=\"election-system\"} | json | slow=\"true\" [1m]))" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "logs",
+      "title": "Chaos events (armed / cleared / engaged)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 21 },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" },
+      "targets": [
+        { "refId": "A", "expr": "{compose_project=\"election-system\"} |~ \"fault-armed|fault-cleared|chaos-engaged\"" }
+      ]
+    }
+  ]
+}

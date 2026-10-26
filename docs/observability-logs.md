@@ -185,6 +185,24 @@ The lines carry the cid, so a slow request leads to its chain with one more filt
   :http-request               4162ms 200 slow=true  cid=…lnzihzac
 ```
 
+### The Chaos dashboard
+
+Grafana → Dashboards → **Chaos** (uid `chaos`), provisioned with the image:
+
+| Panel | Source |
+| :-- | :-- |
+| Chaos hits (range) | `sum(increase(chaos_hits_total[$__range]))` |
+| Nodes with chaos enabled | `sum(chaos_enabled)` |
+| API 5xx rate (stat + timeseries) | `sum(rate(http_requests_total{status=~"5.."}[…]))` |
+| Slow requests (range / per minute) | Loki: `… | json | slow="true"` |
+| Chaos hits by component/fault | `sum by (component, fault) (rate(chaos_hits_total[…]))` |
+| Chaos events (armed / cleared / engaged) | Loki log stream |
+
+The point of the layout: **faults firing** and **user-visible errors** on one screen. A hit
+without a 5xx is a fault the system absorbed; a hit followed by 5xx is a fault it did not.
+`chaos_enabled` is a gauge set at startup, so "where is chaos armed" is a number, not a
+memory.
+
 ### Chaos telemetry
 
 Three signals, because "is chaos on?" and "is it firing?" are different questions:
