@@ -93,7 +93,7 @@
                             :conflict-columns [:election_id :precinct_id]}
                            (instant-temporal-opts db :updated_at)
                            (when fenced?
-                             {:conflict-where "ownership_epoch < EXCLUDED.ownership_epoch"}))]
+                             {:conflict-where "ownership_epoch <= EXCLUDED.ownership_epoch"}))]
      (when (seq norm-ballots)
        (execute-with-sql-metrics
         prom-metrics sql-inst
@@ -135,8 +135,9 @@
          tally-opts (merge {:table :election_tallies
                             :conflict-columns [:election_id]}
                            (instant-temporal-opts db :updated_at)
-                           (when fenced?
-                             {:conflict-where "ownership_epoch < EXCLUDED.ownership_epoch"}))]
+                           {:conflict-where (if fenced?
+                                              "ownership_epoch <= EXCLUDED.ownership_epoch"
+                                              "ownership_epoch = 0")})]
      (execute-with-sql-metrics
       prom-metrics sql-inst
       {:table :election_tallies :operation :upsert :rows 1}

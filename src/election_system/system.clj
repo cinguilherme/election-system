@@ -500,7 +500,7 @@
         ;; Runtime lifecycle for one partition. Used by the ownership manager when
         ;; leases are enabled, and directly by the static path when they are not.
         start-partition!
-        (fn [{:keys [partition lease-id token]}]
+        (fn [{:keys [partition lease-id token fencing]}]
           (let [;; The drain handshake resolves this promise from the consumer's
                 ;; control frame, so shutdown can wait for the backlog without
                 ;; reaching into consumer internals.
@@ -533,10 +533,11 @@
                      :db db
                      :metrics prom-metrics
                      :effect-handler effect-handler
-                     :options {:partition partition
-                               :partitions tot-partitions
-                               :poll-ms 10
-                               :watchdog-interval-ms (min 500 (long (or tick-interval-ms 2000)))}})
+                     :options (cond-> {:partition partition
+                                       :partitions tot-partitions
+                                       :poll-ms 10
+                                       :watchdog-interval-ms (min 500 (long (or tick-interval-ms 2000)))}
+                                (some? fencing) (assoc :effect-ctx {:fencing fencing}))})
                 ;; Read lane: a second subscription per entity, on its own topic
                 ;; (`actor.precinct.read`), feeding the SAME actor instance.
                 ;; Same leases and fencing, different durable -- which is the

@@ -134,6 +134,8 @@
      :on-state! on-state!
      :leave-fn leave-fn
      :max-partitions (when max-partitions (long max-partitions))
+     :initial-members (atom nil)
+     :max-members-seen (atom 0)
      :grace-ms (long (or grace-ms 60000))
      :release-hold-off-ms (long (or release-hold-off-ms 3000))
      :over-cap-since (atom nil)
@@ -147,6 +149,34 @@
   [manager]
   @(:members-atom manager))
 
+(defn- record-membership!
+  [manager members]
+  (let [n (count members)]
+    (when (pos? n)
+      (compare-and-set! (:initial-members manager) nil n)
+      (swap! (:max-members-seen manager) max n))
+    members))
+
+(defn- effective-cap
+  "Computes the dynamic partition cap for `manager` given live `members`.
+   - At steady-state membership, honors configured `:max-partitions`.
+   - When membership shrinks below the peak seen (peer crash/scale-down),
+     expands the cap to `ceil(partitions / live-members)` so survivors can
+     absorb orphaned partitions.
+   - When membership grows above initial membership (scale-up), tightens the
+     cap to `ceil(partitions / live-members)` so existing nodes hand off shares
+     to newly joined replicas."
+  [manager members]
+  (when-let [cap (:max-partitions manager)]
+    (let [n (max 1 (count members))
+          live-cap (long (Math/ceil (/ (double (:partitions manager)) (double n))))
+          init-n (or @(:initial-members manager) n)
+          max-n (max init-n @(:max-members-seen manager))]
+      (cond
+        (< n max-n) (max (long cap) live-cap)
+        (> n init-n) (min (long cap) live-cap)
+        :else (long cap)))))
+
 (defn- refresh-members!
   "Re-reads live membership.
 
@@ -154,33 +184,35 @@
    make this node release every partition it owns, which is a far worse outcome
    than acting on a stale list for one tick."
   [manager]
-  (if-let [f (:members-fn manager)]
-    (let [live (try (->> (f) (map str) (remove str/blank?) vec)
-                    (catch Exception e
-                      (log! (:logger manager) :warn ::membership-read-failed
-                            {:error (.getMessage e)})
-                      nil))]
-      (cond
-        (nil? live) (members-of manager)
-        (empty? live)
-        (let [kept (members-of manager)]
-          (log! (:logger manager) :warn ::membership-empty {:kept kept})
-          (if (seq kept)
-            kept
-            ;; Nothing at all yet: assume we are alone rather than assigning
-            ;; ourselves no work. The next beat corrects it.
-            (do (reset! (:members-atom manager) [(:instance-id manager)])
-                [(:instance-id manager)])))
-        (not-any? #{(:instance-id manager)} live)
-        ;; Our heartbeat is missing. Honouring that means releasing everything —
-        ;; correct if we really fell out, but it also happens for a beat if the
-        ;; store hiccuped on our own key, so say so loudly.
-        (do (log! (:logger manager) :warn ::membership-lost-self
-                  {:live live})
-            (reset! (:members-atom manager) live)
-            live)
-        :else (do (reset! (:members-atom manager) live) live)))
-    (members-of manager)))
+  (record-membership!
+   manager
+   (if-let [f (:members-fn manager)]
+     (let [live (try (->> (f) (map str) (remove str/blank?) vec)
+                     (catch Exception e
+                       (log! (:logger manager) :warn ::membership-read-failed
+                             {:error (.getMessage e)})
+                       nil))]
+       (cond
+         (nil? live) (members-of manager)
+         (empty? live)
+         (let [kept (members-of manager)]
+           (log! (:logger manager) :warn ::membership-empty {:kept kept})
+           (if (seq kept)
+             kept
+             ;; Nothing at all yet: assume we are alone rather than assigning
+             ;; ourselves no work. The next beat corrects it.
+             (do (reset! (:members-atom manager) [(:instance-id manager)])
+                 [(:instance-id manager)])))
+         (not-any? #{(:instance-id manager)} live)
+         ;; Our heartbeat is missing. Honouring that means releasing everything —
+         ;; correct if we really fell out, but it also happens for a beat if the
+         ;; store hiccuped on our own key, so say so loudly.
+         (do (log! (:logger manager) :warn ::membership-lost-self
+                   {:live live})
+             (reset! (:members-atom manager) live)
+             live)
+         :else (do (reset! (:members-atom manager) live) live)))
+     (members-of manager))))
 
 (declare snapshot heartbeat!)
 
@@ -202,7 +234,8 @@
   [manager partition]
   (let [id (election-id (:group manager) partition)
         result (try
-                 (lease/acquire! (:lease manager) id {:lease-ms (:lease-ttl-ms manager)})
+                 (lease/acquire! (:lease manager) id {:owner-id (:instance-id manager)
+                                                      :lease-ms (:lease-ttl-ms manager)})
                  (catch Exception e
                    (log! (:logger manager) :error ::claim-failed
                          {:partition partition :lease-id id :error (.getMessage e)})
@@ -263,7 +296,7 @@
     ;; Claim at most `cap`. Without this a node whose rendezvous share exceeds
     ;; the cap takes everything and then has to forgo the excess -- a pointless
     ;; acquire/release cycle that also arms hold-offs on leases it never needed.
-    (let [cap (:max-partitions manager)
+    (let [cap (effective-cap manager members)
           to-claim (if cap (take cap assigned) assigned)]
       (doseq [p to-claim]
         (put-state! manager p (claim! manager p))))
@@ -384,7 +417,7 @@
         to-release (if (:max-partitions manager)
                      []
                      (sort (remove assigned owned)))]
-    (let [cap (:max-partitions manager)
+    (let [cap (effective-cap manager members)
           ;; Tracked as the loop runs: a claim in this same pass must count
           ;; towards the cap, or a node under it could take every vacant share
           ;; in one tick.
@@ -433,7 +466,9 @@
     ;; for it. But it must also not keep it forever, or a returning peer can
     ;; never take its share. So: hold above the cap during grace, then hand the
     ;; excess back with a hold-off so it does not bounce straight back.
-    (let [cap (:max-partitions manager)
+    (let [cap (effective-cap manager members)
+          scaled-up? (> (count members) (or @(:initial-members manager) (count members)))
+          grace-ms (if scaled-up? 0 (:grace-ms manager))
           held (->> @(:state manager)
                     (filter (fn [[_ e]] (= :active (:state e))))
                     (map key)
@@ -442,7 +477,7 @@
       (if (and cap (> (count held) cap))
         (let [since (or @(:over-cap-since manager)
                         (do (reset! (:over-cap-since manager) now) now))]
-          (when (>= (- now since) (:grace-ms manager))
+          (when (>= (- now since) grace-ms)
             (reset! (:over-cap-since manager) nil)
             (let [mine (set (assigned-partitions (:instance-id manager) members
                                                 (:partitions manager)))
@@ -471,7 +506,7 @@
     ;; it never probes, and no one else is allowed to either, leaving the
     ;; partition unowned. The store's atomic acquire is the arbiter -- two nodes
     ;; racing costs one `:busy` reply, and the cap bounds the outcome.
-    (let [cap (:max-partitions manager)
+    (let [cap (effective-cap manager members)
           active (->> @(:state manager)
                       (filter (fn [[_ e]] (= :active (:state e))))
                       (map key)

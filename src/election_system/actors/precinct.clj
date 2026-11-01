@@ -5,7 +5,8 @@
    - O(1) in-memory duplicate voter prevention (`:voted-ids` set) without DB reads
    - Election window enforcement (`:opens-at` / `:closes-at`) via `d-core.libs.time`
    - Batched ballot and tally persistence effects (`:db/flush-precinct`) + parent delta `:tell`"
-  (:require [d-core.libs.time :as time]
+  (:require [d-core.core.databases.protocols.simple-sql :as sql]
+            [d-core.libs.time :as time]
             [election-system.domain.election :as domain]))
 
 (defn init-precinct-state
@@ -240,6 +241,46 @@
 
       [state {:status :error :error (str "Unknown message type: " msg-type)} []])))
 
+(defn- row-val [row k]
+  (or (get row k)
+      (some (fn [[rk rv]]
+              (when (= (name rk) (name k))
+                rv))
+            row)))
+
+(defn hydrate-precinct-state
+  "Hydrates a `:precinct` actor's state from durable `ballots` rows in SQL when
+   `:db` is present in `effect-ctx` and SQL holds ballots not yet reflected in
+   `base-state` (e.g. after a crash before a snapshot checkpoint)."
+  [_entity-id base-state {:keys [db]}]
+  (if-not db
+    base-state
+    (try
+      (let [eid (str (:election-id base-state))
+            pid (str (:precinct-id base-state))
+            ballot-rows (sql/select db {:table :ballots
+                                        :where {:election_id eid
+                                                :precinct_id pid}})
+            ballot-count (count ballot-rows)
+            base-total (long (or (:total-votes base-state) 0))]
+        (if (or (> ballot-count base-total)
+                (< (count (:voted-ids base-state)) ballot-count))
+          (let [tallies (reduce (fn [acc row]
+                                  (let [cand (keyword (row-val row :candidate_id))]
+                                    (update acc cand (fnil inc 0))))
+                                {}
+                                ballot-rows)
+                voted-ids (into (or (:voted-ids base-state) #{})
+                                (keep #(some-> (row-val % :voter_id) str))
+                                ballot-rows)]
+            (assoc base-state
+                   :tallies tallies
+                   :total-votes ballot-count
+                   :voted-ids voted-ids))
+          base-state))
+      (catch Exception _
+        base-state))))
+
 (defn make-precinct-spec
   "Constructs an `EntitySpec` for `:precinct` actors."
   ([]
@@ -259,6 +300,7 @@
                                                 :tick-max-age-ms tick-max-age-ms
                                                 :tick-interval-ms tick-interval-ms
                                                 :tell-interval-ms tell-interval-ms})
+              :hydrate-fn hydrate-precinct-state
               :step-fn (if (seq tick-policy)
                          (fn [state msg ctx]
                            (precinct-step (merge state tick-policy) msg ctx))
