@@ -8,15 +8,21 @@
             [clojure.test :refer [deftest is testing]]
             [d-core.actor-system.core :as actor-core]
             [d-core.actor-system.storage.sql-adapter :as sql-adapter]
+            [d-core.actor-system.transport.async-proxy :as ap-transport]
             [d-core.core.clients.sqlite.client :as sqlite-client]
             [d-core.core.databases.protocols.simple-sql :as sql]
             [d-core.core.databases.sqlite]
             [d-core.core.leader-election.protocol :as lease]
+            [d-core.core.producers.common :as common-prod]
+            [d-core.core.producers.in-memory :as im-prod]
             [d-core.libs.time :as time]
+            [d-core.queue]
+            [d-core-async-proxy.grpc.server :as grpc-srv]
+            [d-core-async-proxy.subscriptions.registry :as reg]
             [election-system.db.schema :as schema]
             [election-system.db.writer :as writer]
             [election-system.ownership :as own]
-            [ election-system.system :as sys]
+            [election-system.system :as sys]
             [integrant.core :as ig]))
 
 ;; -----------------------------------------------------------------------------
@@ -346,4 +352,124 @@
               (finally
                 (actor-core/stop-runtime! rt-2)))))
         (finally
+          (.delete tmp))))))
+
+;; -----------------------------------------------------------------------------
+;; 5. Yellow Uncommitted Buffer Recovery: Replica terminated before DB flush
+;; -----------------------------------------------------------------------------
+
+(deftest uncommitted-yellow-buffer-recovers-when-replica-terminated-before-db-flush
+  (testing "When Replica 1 accepts votes into its in-memory yellow buffer (< batch-size, 0 rows in SQL) and is terminated before flushing, the proxy rolls back the uncommitted buffer and replays those votes to Replica 2"
+    (let [tmp (java.io.File/createTempFile "yellow-buffer-recovery-" ".db")
+          c (sqlite-client/make-client {:jdbc-url (str "jdbc:sqlite:" (.getAbsolutePath tmp))})
+          db (ig/init-key :d-core.core.databases.sqlite/db
+                          {:sqlite-client c :storage-schema schema/storage-schema})
+          _ (schema/create-tables! db :sqlite)
+          snapshot-store (sql-adapter/create-sql-snapshot-store db)
+          effect-handler (writer/make-effect-handler db)
+          open-inst (time/instant "2026-11-03T08:00:00Z")
+          close-inst (time/instant "2026-11-03T20:00:00Z")
+          clk (time/manual-clock (time/instant "2026-11-03T10:00:00Z"))
+          ;; batch-size=50 and tick-min-batch=50 so 3 votes stay in the yellow uncommitted buffer
+          entities (sys/make-entity-specs {:election-id "gen-2026"
+                                           :opens-at open-inst
+                                           :closes-at close-inst
+                                           :batch-size 50
+                                           :tick-min-batch 50
+                                           :tick-max-age-ms 60000
+                                           :flush-every-n 1
+                                           :tell-interval-ms 0
+                                           :snapshot-every-n 2000})
+          in-proc-name (str "yellow-buf-proxy-" (random-uuid))
+          queues (ig/init-key :d-core.queue/in-memory-queues {:topics [:default]})
+          im-producer (im-prod/->InMemoryProducer queues nil)
+          routing {:publish {:default {:targets :in-memory}}}
+          proxy-producer (common-prod/->CommonProducer :in-memory {:in-memory im-producer} routing nil nil)
+          proxy-registry (reg/make-registry {:queues queues
+                                             :dispatcher-ctx {:max-attempts 2 :timeout-ms 2000}
+                                             :logger nil})
+          proxy-server (grpc-srv/start-grpc-server {:producer proxy-producer
+                                                    :registry proxy-registry
+                                                    :transport :in-process
+                                                    :in-process-name in-proc-name})
+          t-ingress (ap-transport/create-async-proxy-transport
+                     {:transport :in-process
+                      :in-process-name in-proc-name
+                      :partitions 1})
+          api-client (actor-core/create-client t-ingress {:partitions 1 :timeout-ms 2000})]
+      (try
+        (time/with-clock clk
+          ;; 1. Start Replica 1 on partition 0
+          (let [t-rep1 (ap-transport/create-async-proxy-transport
+                        {:transport :in-process
+                         :in-process-name in-proc-name
+                         :partition 0
+                         :partitions 1
+                         :poll-ms 5})
+                rt-rep1 (actor-core/start-runtime
+                         {:transport t-rep1
+                          :storage snapshot-store
+                          :entities entities
+                          :db db
+                          :effect-handler effect-handler
+                          :options {:partition 0 :partitions 1 :poll-ms 5 :watchdog-interval-ms 60000}})]
+            ;; Cast 3 votes via synchronous API `ask-sync!` (< batch-size 50)
+            (doseq [[v cand] [["voter-1" :alice] ["voter-2" :bob] ["voter-3" :alice]]]
+              (let [res (actor-core/ask-sync! api-client :precinct "p-101"
+                                              {:type :cast-vote :voter-id v :candidate-id cand})]
+                (is (= :accepted (:status res)))
+                (is (nil? (:flushed? res)))))
+
+            ;; Verify all 3 votes are ONLY in Replica 1's yellow uncommitted RAM buffer (0 in SQL, 0 in snapshots!)
+            (is (= 0 (count (sql/select db {:table :ballots})))
+                "Before flush, all 3 votes reside only in Replica 1's yellow uncommitted buffer")
+            (is (= 0 (count (sql/select db {:table :actor_snapshots})))
+                "No actor snapshot exists before snapshot-every-n (2000)")
+
+            ;; Simulate `SIGKILL` of Replica 1: transport stream breaks without running
+            ;; `flush-partition-state!` or `stop-actor-engine!` (so 0 snapshots and 0 ballots in SQL)
+            (deliver (get-in rt-rep1 [:engine :watchdog-stop-p]) true)
+            (doseq [s (:subscriptions rt-rep1)]
+              (d-core.actor-system.protocols/unsubscribe! t-rep1 s {}))
+            (ap-transport/close-async-proxy-transport! t-rep1))
+
+          ;; 2. Start Replica 2 on partition 0: proxy replays the 3 uncommitted votes
+          (let [t-rep2 (ap-transport/create-async-proxy-transport
+                        {:transport :in-process
+                         :in-process-name in-proc-name
+                         :partition 0
+                         :partitions 1
+                         :poll-ms 5})
+                rt-rep2 (actor-core/start-runtime
+                         {:transport t-rep2
+                          :storage snapshot-store
+                          :entities entities
+                          :db db
+                          :effect-handler effect-handler
+                          :options {:partition 0 :partitions 1 :poll-ms 5 :watchdog-interval-ms 60000}})]
+            (try
+              ;; Wait briefly for Replica 2 to consume the replayed yellow-buffer messages
+              (Thread/sleep 100)
+              (let [live-precinct (actor-core/ask-sync! api-client :precinct "p-101" {:type :get-tally})]
+                (is (= 3 (:total-votes live-precinct))
+                    "Replica 2 recovered all 3 uncommitted votes from the transport replay")
+                (is (= {:alice 2 :bob 1} (:tallies live-precinct))))
+
+              ;; Trigger a single `:tick` on Replica 2: because the batch contains replayed
+              ;; messages (`:has-replayed-ballots? true`), it bypasses `tick-min-batch=50` and flushes!
+              (actor-core/trigger-tick! rt-rep2 :precinct "p-101")
+              (Thread/sleep 50)
+
+              (is (= 3 (count (sql/select db {:table :ballots})))
+                  "Replica 2 flushed all 3 recovered yellow-buffer votes to SQL on the next tick")
+              (let [tally-view (actor-core/ask-sync! api-client :election-tally "gen-2026" {:type :get-tally})]
+                (is (= 3 (:total-votes tally-view)))
+                (is (= {:alice 2 :bob 1} (:tallies tally-view))))
+              (finally
+                (actor-core/stop-runtime! rt-rep2)
+                (ap-transport/close-async-proxy-transport! t-rep2)))))
+        (finally
+          (ap-transport/close-async-proxy-transport! t-ingress)
+          (ig/halt-key! :d-core-async-proxy.grpc/server proxy-server)
+          (ig/halt-key! :d-core-async-proxy.subscriptions/registry proxy-registry)
           (.delete tmp))))))

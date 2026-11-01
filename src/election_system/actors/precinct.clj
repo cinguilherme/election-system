@@ -32,7 +32,9 @@
       :rejected-duplicates 0
       :rejected-window 0
       :pending-ballots []
+      :pending-sequences []
       :pending-deltas {}
+      :has-replayed-ballots? false
       ;; Deltas for the national tally are coalesced: accumulating them and
       ;; telling at most every `tell-interval-ms` cuts the tally actor's inbox
       ;; pressure by an order of magnitude. Those are NATS messages, not DB
@@ -63,6 +65,7 @@
     (let [now (System/currentTimeMillis)
           next-flushes (inc (long (or (:flushes state) 0)))
           ballots (:pending-ballots state)
+          committed-seqs (vec (:pending-sequences state))
           deltas (:pending-deltas state)
           ;; Send the accumulated deltas only when the interval has elapsed (or
           ;; when an explicit flush/passivation forces it). Until then they stay
@@ -79,6 +82,8 @@
                                     :ballots ballots
                                     :flushes next-flushes
                                     :last-sequence (:last-sequence state)}
+                             (seq committed-seqs)
+                             (assoc :committed-sequences committed-seqs)
                              ;; Ownership epoch of the delivery that produced
                              ;; this write, so the upsert can refuse to apply
                              ;; over a newer owner. Absent when ownership is not
@@ -99,16 +104,20 @@
                                      :flushes next-flushes}}))
           flushed-state (assoc state
                                :pending-ballots []
+                               :pending-sequences []
+                               :has-replayed-ballots? false
                                :pending-deltas (if tell? {} deltas)
                                :last-tell-at (if tell? now (:last-tell-at state))
                                :dirty? false
                                :flushes next-flushes
                                :last-flush-at (System/currentTimeMillis))]
       [flushed-state
-       {:status :flushed
-        :precinct-id precinct-id
-        :flushed-ballots (count ballots)
-        :flushes next-flushes}
+       (cond-> {:status :flushed
+                :precinct-id precinct-id
+                :flushed-ballots (count ballots)
+                :flushes next-flushes}
+         (seq committed-seqs)
+         (assoc :committed-sequences committed-seqs))
        effects]))))
 
 (defn- handle-cast-vote
@@ -148,10 +157,13 @@
                             :voter_id voter-id
                             :candidate_id (name candidate-id)
                             :cast_at now-inst}
+                redelivered? (boolean (:redelivered? ctx))
                 updated (-> state
                             (assoc :election-id election-id
                                    :dirty? true)
-                            (cond-> seq-id (assoc :last-sequence seq-id))
+                            (cond-> seq-id (assoc :last-sequence seq-id)
+                                    seq-id (update :pending-sequences (fnil conj []) seq-id)
+                                    redelivered? (assoc :has-replayed-ballots? true))
                             (update :voted-ids conj voter-id)
                             (update-in [:tallies candidate-id] (fnil inc 0))
                             (update :total-votes (fnil inc 0))
@@ -165,10 +177,14 @@
                        :candidate-id candidate-id
                        :precinct-total (:total-votes updated)}]
             (if (>= (count (:pending-ballots updated)) batch-size)
-              (let [[flushed-state _flush-reply effects]
+              (let [[flushed-state flush-reply effects]
                     (execute-flush-transition updated false (:fencing ctx))]
-                [flushed-state (assoc reply :flushed? true) effects])
-              [updated reply []])))))))
+                [flushed-state
+                 (cond-> (assoc reply :flushed? true)
+                   (seq (:committed-sequences flush-reply))
+                   (assoc :committed-sequences (:committed-sequences flush-reply)))
+                 effects])
+              [updated (cond-> reply seq-id (assoc :buffered? true)) []])))))))
 
 (defn tally-view
   "The tally projection of a precinct's state.
@@ -227,6 +243,7 @@
             age-ms (- (System/currentTimeMillis) last-at)
             max-age (long (or (:tick-max-age-ms state) 10000))]
         (if (or (zero? pending)
+                (:has-replayed-ballots? state)
                 (>= pending min-batch)
                 (>= age-ms max-age))
           ;; Ballots only. The tally row is a DB checkpoint for reporting and for
@@ -253,33 +270,36 @@
    `:db` is present in `effect-ctx` and SQL holds ballots not yet reflected in
    `base-state` (e.g. after a crash before a snapshot checkpoint)."
   [_entity-id base-state {:keys [db]}]
-  (if-not db
-    base-state
-    (try
-      (let [eid (str (:election-id base-state))
-            pid (str (:precinct-id base-state))
-            ballot-rows (sql/select db {:table :ballots
-                                        :where {:election_id eid
-                                                :precinct_id pid}})
-            ballot-count (count ballot-rows)
-            base-total (long (or (:total-votes base-state) 0))]
-        (if (or (> ballot-count base-total)
-                (< (count (:voted-ids base-state)) ballot-count))
-          (let [tallies (reduce (fn [acc row]
-                                  (let [cand (keyword (row-val row :candidate_id))]
-                                    (update acc cand (fnil inc 0))))
-                                {}
-                                ballot-rows)
-                voted-ids (into (or (:voted-ids base-state) #{})
-                                (keep #(some-> (row-val % :voter_id) str))
-                                ballot-rows)]
-            (assoc base-state
-                   :tallies tallies
-                   :total-votes ballot-count
-                   :voted-ids voted-ids))
-          base-state))
-      (catch Exception _
-        base-state))))
+  (let [base-state (cond-> base-state
+                     (seq (:pending-ballots base-state))
+                     (assoc :has-replayed-ballots? true))]
+    (if-not db
+      base-state
+      (try
+        (let [eid (str (:election-id base-state))
+              pid (str (:precinct-id base-state))
+              ballot-rows (sql/select db {:table :ballots
+                                          :where {:election_id eid
+                                                  :precinct_id pid}})
+              ballot-count (count ballot-rows)
+              base-total (long (or (:total-votes base-state) 0))]
+          (if (or (> ballot-count base-total)
+                  (< (count (:voted-ids base-state)) ballot-count))
+            (let [tallies (reduce (fn [acc row]
+                                    (let [cand (keyword (row-val row :candidate_id))]
+                                      (update acc cand (fnil inc 0))))
+                                  {}
+                                  ballot-rows)
+                  voted-ids (into (or (:voted-ids base-state) #{})
+                                  (keep #(some-> (row-val % :voter_id) str))
+                                  ballot-rows)]
+              (assoc base-state
+                     :tallies tallies
+                     :total-votes ballot-count
+                     :voted-ids voted-ids))
+            base-state))
+        (catch Exception _
+          base-state)))))
 
 (defn make-precinct-spec
   "Constructs an `EntitySpec` for `:precinct` actors."
